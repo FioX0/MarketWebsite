@@ -1,0 +1,49 @@
+{
+  "name": "9capi-marketplace",
+  "version": "1.0.0",
+  "description": "A marketplace website for browsing and purchasing items from 9CAPI Market Worker",
+  "main": "index.html",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "start": "npm run dev"
+  },
+  "keywords": [
+    "nine-chronicles",
+    "marketplace",
+    "chrono",
+    "wallet",
+    "blockchain",
+    "9capi",
+    "nft",
+    "gaming"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/tsconfig": "^0.8.1",
+    "http-server": "^14.1.1",
+    "live-server": "^1.2.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12",
+    "vue-tsc": "^3.1.1"
+  },
+  "dependencies": {
+    "@planetarium/account": "^4.6.1",
+    "@planetarium/bencodex": "^0.2.2",
+    "@planetarium/chrono-sdk": "^0.3.2",
+    "@planetarium/tx": "^4.6.1",
+    "vue": "^3.5.22",
+    "vue-router": "^4.6.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "homepage": ""
+}
