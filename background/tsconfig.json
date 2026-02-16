@@ -1,0 +1,10 @@
+{
+    "compilerOptions": {
+        "allowJs": true,
+        "types": ["chrome"],
+        "lib": ["ESNext", "DOM"],
+        "target": "ESNext",
+        "moduleResolution": "Bundler"
+    },
+    "include": ["src", "test"]
+}

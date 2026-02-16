@@ -24,9 +24,14 @@
         <button v-if="isReadOnlyMode" @click="connect" class="btn btn-primary">
           Connect
         </button>
-        <button v-else @click="disconnect" class="btn btn-outline">
-          Disconnect
-        </button>
+        <template v-else>
+          <button @click="transfer" class="btn btn-transfer">
+            NCG Transfer
+          </button>
+          <button @click="disconnect" class="btn btn-outline">
+            Disconnect
+          </button>
+        </template>
       </div>
     </div>
   </header>
@@ -44,6 +49,7 @@ defineProps<Props>()
 
 const emit = defineEmits<{
   connect: []
+  transfer: []
 }>()
 
 function formatAddress(address: string): string {
@@ -62,6 +68,10 @@ function disconnect() {
 
 function connect() {
   emit('connect')
+}
+
+function transfer() {
+  emit('transfer')
 }
 </script>
 
@@ -178,6 +188,17 @@ function connect() {
 .btn-primary:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.btn-transfer {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  border: none;
+}
+
+.btn-transfer:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
 }
 
 @media (max-width: 768px) {

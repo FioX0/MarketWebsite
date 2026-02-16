@@ -6,6 +6,7 @@
       :wallet-balance="walletData.walletBalance"
       :is-read-only-mode="isReadOnlyMode"
       @connect="handleConnectFromHeader"
+      @transfer="openTransferModal"
     />
     
     <!-- Login Modal -->
@@ -23,6 +24,9 @@
             </button>
             <button @click="showChainSelector = true" class="btn btn-secondary">
               Read Only
+            </button>
+            <button @click="goToChronoSetup" class="btn btn-outline">
+              How to Setup Chrono
             </button>
           </div>
           
@@ -46,9 +50,115 @@
               >
                 Odin
               </button>
+              <button 
+                @click="selectReadOnlyChain('thor')" 
+                class="btn btn-primary"
+                :class="{ 'btn-active': currentReadOnlyChain === 'thor' }"
+              >
+                Thor
+              </button>
             </div>
             <button @click="showChainSelector = false" class="btn btn-outline" style="margin-top: 1rem;">
               Back
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Avatar Selection Modal -->
+    <div v-if="avatarSelectionVisible" class="modal-overlay" @click.self="closeAvatarSelection">
+      <div class="modal-content login-modal">
+        <div class="modal-header">
+          <h2>Select Avatar</h2>
+        </div>
+        <div class="modal-body">
+          <p>Multiple avatars found. Please select which avatar should make this purchase:</p>
+          
+          <div class="avatar-list" style="margin: 1.5rem 0;">
+            <div
+              v-for="avatar in availableAvatars"
+              :key="avatar.address"
+              class="avatar-option"
+              :class="{ 'selected': selectedAvatarAddress === avatar.address }"
+              @click="selectedAvatarAddress = avatar.address"
+              style="
+                padding: 1rem;
+                margin: 0.5rem 0;
+                border: 2px solid #2d3748;
+                border-radius: 8px;
+                cursor: pointer;
+                background: #1a202c;
+                transition: all 0.2s;
+              "
+            >
+              <div style="font-weight: 600; color: #e2e8f0; margin-bottom: 0.25rem;">
+                {{ avatar.name }}
+              </div>
+              <div style="font-size: 0.85rem; color: #a0aec0; font-family: monospace;">
+                {{ avatar.address }}
+              </div>
+            </div>
+          </div>
+          
+          <div class="modal-actions" style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button @click="closeAvatarSelection" class="btn btn-outline" style="flex: 1;">
+              Cancel
+            </button>
+            <button @click="selectAvatarAndProceed" class="btn btn-primary" style="flex: 1;" :disabled="!selectedAvatarAddress">
+              Proceed with Purchase
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- NCG Transfer Modal -->
+    <div v-if="transferModalVisible" class="modal-overlay" @click.self="closeTransferModal">
+      <div class="modal-content login-modal">
+        <div class="modal-header">
+          <h2>Transfer NCG</h2>
+        </div>
+        <div class="modal-body">
+          <p>
+            Transfer NCG from the current network
+            <strong>{{ walletData.currentNetworkName || 'Unknown' }}</strong>
+            to another network.
+          </p>
+          
+          <div style="text-align:left; margin: 1rem 0;">
+            <label style="display:block; margin-bottom:0.5rem; color:#cbd5e0;">Select target network:</label>
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+              <label v-for="opt in transferTargetOptions" :key="opt" style="display:flex; align-items:center; gap:0.5rem;">
+                <input type="radio" :value="opt" v-model="transferTarget" />
+                <span style="color:#e2e8f0;">{{ opt.charAt(0).toUpperCase() + opt.slice(1) }}</span>
+              </label>
+            </div>
+          </div>
+          
+          <div style="text-align:left; margin: 1rem 0;">
+            <label for="transfer-amount" style="display:block; margin-bottom:0.5rem; color:#cbd5e0;">Amount (NCG):</label>
+            <input
+              id="transfer-amount"
+              type="number"
+              min="0"
+              step="0.01"
+              v-model="transferAmount"
+              placeholder="e.g. 1.00"
+              class="search-input"
+              style="max-width: 240px;"
+            />
+            <div style="margin-top:0.5rem; color:#94a3b8; font-size:0.85rem;">
+              Bridge Transfers may take a minute ot two to process.
+            </div>
+          </div>
+          
+          <div class="modal-actions" style="display:flex; gap: 1rem; margin-top:1.5rem;">
+            <button @click="closeTransferModal" class="btn btn-outline" style="flex:1;">
+              Cancel
+            </button>
+            <button @click="submitTransfer" class="btn btn-primary" style="flex:1;" :disabled="!canSubmitTransfer">
+              Send
             </button>
           </div>
         </div>
@@ -82,6 +192,28 @@
               {{ elemental.name }}
             </button>
           </div>
+        </div>
+
+        <!-- Spell Filter -->
+        <div class="spell-selector">
+          <label for="spell-select">Spell:</label>
+          <select
+            id="spell-select"
+            v-model="selectedSpellId"
+            @change="selectSpell"
+            class="order-select spell-select"
+            :disabled="spellsLoading"
+          >
+            <option :value="null">All Spells</option>
+            <option
+              v-for="spell in availableSpellsForCategory"
+              :key="spell.id"
+              :value="spell.id"
+            >
+              {{ spell.name }}
+            </option>
+          </select>
+          <span v-if="spellsLoading" class="spell-loading-hint">Loading spells...</span>
         </div>
 
         <!-- Ordering Selector -->
@@ -393,7 +525,7 @@ import { ref, onMounted, computed } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
 import { preloadItemData, getItemName, getSkillName, getSkillDescription, getElementalTypeName, getStatTypeName, findIconIdsByName, getStatQualityPercentForItemStat, inferAdditionalStatType } from '../services/itemDataService'
 import { getChronoSdk } from '@planetarium/chrono-sdk'
-import { encode, BencodexDictionary } from '@planetarium/bencodex'
+import { useRouter } from 'vue-router'
 
 interface ItemProduct {
   productId: string
@@ -461,7 +593,7 @@ const showChainSelector = ref(false)
 const isReadOnlyMode = ref(false)
 const walletAvailable = ref(false)
 const isConnecting = ref(false)
-const readOnlyChain = ref<'heimdall' | 'odin' | null>(null)
+const readOnlyChain = ref<'heimdall' | 'odin' | 'thor' | null>(null)
 
 const items = ref<ItemProduct[]>([])
 const loading = ref(false)
@@ -469,6 +601,7 @@ const itemDataLoading = ref(false)
 const error = ref('')
 const currentPage = ref(1)
 const itemsPerPage = 28
+const router = useRouter()
 
 // Categories data
 const categories = [
@@ -483,6 +616,14 @@ const selectedCategory = ref(6) // Start with Weapons
 
 // Elemental type filter
 const selectedElementalType = ref<number | null>(null) // null = all elements
+
+// Spell filter - spells shown are derived from equipment in current category
+const selectedSpellId = ref<number | null>(null) // null = all spells
+const availableSpellsForCategory = ref<Array<{ id: number; name: string }>>([])
+const spellsLoading = ref(false)
+
+// Spell API base URL - in development, use localhost. Switch to https://api.9capi.com when deployed.
+const SPELL_API_BASE = 'https://api.9capi.com'
 
 // Elemental types (matching itemDataService.ts)
 const elementalTypes = [
@@ -539,21 +680,281 @@ const walletData = ref({
   currentNetworkName: ''
 })
 
-const currentNetworkKey = computed<'odin' | 'heimdall'>(() => {
+const currentNetworkKey = computed<'odin' | 'heimdall' | 'thor'>(() => {
   if (isReadOnlyMode.value) {
     // In read-only mode, use the reactive readOnlyChain ref
     return readOnlyChain.value || 'heimdall'
   }
   const n = (walletData.value.currentNetworkName || '').toLowerCase()
-  return n.includes('heimdall') ? 'heimdall' : 'odin'
+  if (n.includes('heimdall')) return 'heimdall'
+  if (n.includes('thor')) return 'thor'
+  return 'odin'
 })
 
-const currentReadOnlyChain = computed<'heimdall' | 'odin' | null>(() => {
+const currentReadOnlyChain = computed<'heimdall' | 'odin' | 'thor' | null>(() => {
   if (isReadOnlyMode.value) {
     return readOnlyChain.value
   }
   return null
 })
+
+// Helper to reliably open a URL in a new tab even if popup blockers are aggressive
+function openInNewTab(url: string) {
+  try {
+    const win = window.open(url, '_blank', 'noopener')
+    if (win) return
+  } catch (_) { /* fall through */ }
+  const a = document.createElement('a')
+  a.href = url
+  a.target = '_blank'
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// Transfer modal state
+const transferModalVisible = ref(false)
+const transferTarget = ref<'odin' | 'heimdall' | 'thor' | ''>('')
+const transferAmount = ref<string>('')
+const transferTargetOptions = computed<Array<'odin' | 'heimdall' | 'thor'>>(() => {
+  const cur = currentNetworkKey.value
+  const allowed: Record<'odin' | 'heimdall' | 'thor', Array<'odin' | 'heimdall' | 'thor'>> = {
+    odin: ['heimdall', 'thor'],
+    heimdall: ['odin'],
+    thor: ['odin'],
+  }
+  return allowed[cur]
+})
+const canSubmitTransfer = computed(() => {
+  if (!walletData.value.walletAddress) return false
+  if (!transferTarget.value) return false
+  const amt = Number(transferAmount.value)
+  return Number.isFinite(amt) && amt > 0
+})
+
+function openTransferModal() {
+  if (!walletData.value.walletAddress) {
+    alert('Connect your wallet first.')
+    return
+  }
+  transferModalVisible.value = true
+  // default to first available target
+  const opts = transferTargetOptions.value
+  transferTarget.value = (opts[0] || '') as any
+  transferAmount.value = ''
+}
+
+function closeTransferModal() {
+  transferModalVisible.value = false
+  transferTarget.value = '' as any
+  transferAmount.value = ''
+}
+
+// No longer using 9CAPI for bridge; we query GraphQL directly for transferAsset
+
+async function submitTransfer() {
+  try {
+    const source = currentNetworkKey.value
+    const target = transferTarget.value as 'odin' | 'heimdall' | 'thor'
+    const amountNCG = Number(transferAmount.value)
+    if (!walletInstance.value) {
+      walletInstance.value = getChronoSdk()
+    }
+    if (!walletInstance.value) {
+      alert('Chrono wallet not detected.')
+      return
+    }
+    if (!walletData.value.walletAddress) {
+      alert('Wallet not connected.')
+      return
+    }
+    if (!target || target === source) {
+      alert('Please select a different target network.')
+      return
+    }
+    if (!Number.isFinite(amountNCG) || amountNCG <= 0) {
+      alert('Enter a valid amount.')
+      return
+    }
+
+    // Determine bridge recipient by route
+    const recipientsByRoute: Record<string, string> = {
+      // Odin -> X
+      'odin:heimdall': '1c2ae97380cfb4f732049e454f6d9a25d4967c6f',
+      'odin:thor': '3e498a6a5cdbe027769f9502026c37cb8613186e',
+      // X -> Odin (use same bridge recipients by chain)
+      'heimdall:odin': '1c2ae97380cfb4f732049e454f6d9a25d4967c6f',
+      'thor:odin': '3e498a6a5cdbe027769f9502026c37cb8613186e',
+    }
+    const recipient = recipientsByRoute[`${source}:${target}`]
+    if (!recipient) return alert('Unsupported bridge route.')
+
+    // Build actionQuery.transferAsset on the current network's GraphQL
+    const ensureHexPrefix = (address: string): string => {
+      const addr = String(address || '')
+      return addr.startsWith('0x') ? addr : ('0x' + addr)
+    }
+    // Amount must be string; format to at most 2 decimals
+    const amountStr = amountNCG.toFixed(2).replace(/\.?0+$/,'') // trim trailing zeros but keep integer when possible
+    const gql = `
+      query($sender: Address!, $recipient: Address!, $memo: String!, $amount: String!) {
+        actionQuery {
+          transferAsset(sender: $sender, recipient: $recipient, memo: $memo, amount: $amount, currency: NCG)
+        }
+      }
+    `
+    // Sender/memo are the connected agent address; recipient is the bridge account for the route.
+    const variables = {
+      sender: ensureHexPrefix(walletData.value.walletAddress),
+      // Pass recipient as provided (no 0x) per example; if schema requires, add 0x; otherwise leave as-is.
+      recipient: recipient,
+      memo: ensureHexPrefix(walletData.value.walletAddress),
+      amount: amountStr,
+    }
+    const { json: transferResp, endpointUsed } = await postGraphqlWithFailover(source, {
+      query: gql,
+      variables
+    })
+    console.log('[Bridge] transferAsset via:', endpointUsed, transferResp)
+    if (transferResp?.errors && transferResp.errors.length) {
+      throw new Error(transferResp.errors[0]?.message || 'GraphQL error during transferAsset')
+    }
+    let plainvalueHex = transferResp?.data?.actionQuery?.transferAsset
+    if (typeof plainvalueHex !== 'string' || plainvalueHex.length === 0) {
+      throw new Error('Invalid transferAsset response')
+    }
+    plainvalueHex = plainvalueHex.trim()
+    if (plainvalueHex.startsWith('"') && plainvalueHex.endsWith('"')) {
+      plainvalueHex = plainvalueHex.slice(1, -1)
+    }
+    if (plainvalueHex.startsWith('0x') || plainvalueHex.startsWith('0X')) {
+      plainvalueHex = plainvalueHex.slice(2)
+    }
+    if (!/^[0-9a-fA-F]+$/.test(plainvalueHex)) {
+      throw new Error('Plainvalue is not a valid hex string')
+    }
+
+    console.log('[Bridge] Signing plainvalue...')
+    const signed = await walletInstance.value.signWithPlainValue(
+      walletData.value.walletAddress,
+      plainvalueHex
+    )
+    let payloadHex = ''
+    const toHex = (u8: Uint8Array) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
+    if (typeof signed === 'string') {
+      payloadHex = signed.startsWith('0x') || signed.startsWith('0X') ? signed.slice(2) : signed
+    } else if (signed && typeof signed === 'object') {
+      if (typeof (signed as any).hex === 'string') {
+        const s = (signed as any).hex
+        payloadHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
+      } else if ((signed as any) instanceof Uint8Array) {
+        payloadHex = toHex(signed as unknown as Uint8Array)
+      } else if (typeof (signed as any).payload === 'string') {
+        const s = (signed as any).payload
+        payloadHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
+      }
+    }
+    if (!payloadHex) {
+      throw new Error('Failed to derive signed payload')
+    }
+
+    const txId = await broadcastTransaction(payloadHex, source)
+    const explorer = source === 'odin'
+      ? `https://9cscan.com/tx/${txId}`
+      : (source === 'heimdall'
+        ? `https://heimdall.9cscan.com/tx/${txId}`
+        : `https://thor.9cscan.com/tx/${txId}`)
+    openInNewTab(explorer)
+    alert(`Transfer submitted!\nTx: ${txId}\nOpen: ${explorer}`)
+    closeTransferModal()
+  } catch (err: any) {
+    console.error('[Bridge] Transfer failed:', err)
+    alert(`Transfer failed: ${err?.message || err}`)
+  }
+}
+// RPC endpoints per network (ordered by priority; Odin includes fallbacks)
+const RPC_ENDPOINTS: Record<'odin' | 'heimdall' | 'thor', string[]> = {
+  odin: [
+    'https://odin-rpc-1.nine-chronicles.com/graphql',
+    'https://odin-rpc-2.nine-chronicles.com/graphql',
+    'https://odin-rpc-3.nine-chronicles.com/graphql',
+  ],
+  heimdall: [
+    'https://heimdall-rpc-1.nine-chronicles.com/graphql',
+    'https://heimdall-rpc-2.nine-chronicles.com/graphql',
+    'https://heimdall-rpc-3.nine-chronicles.com/graphql',
+  ],
+  thor: [
+    'https://thor-rpc-1.nine-chronicles.com/graphql',
+  ],
+}
+
+const RETRY_STATUS_CODES = new Set<number>([
+  408, // Request Timeout
+  429, // Too Many Requests (often transient)
+  500, // Internal Server Error
+  502, // Bad Gateway
+  503, // Service Unavailable
+  504, // Gateway Timeout
+  520, 521, 522, 523, 524, 525, 526, // Cloudflare-style errors
+])
+
+function getRpcEndpoints(networkKey: 'odin' | 'heimdall' | 'thor'): string[] {
+  return RPC_ENDPOINTS[networkKey] || []
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Posts a GraphQL request to the network's RPC with endpoint failover and timeout.
+ * Returns { json, endpointUsed }.
+ */
+async function postGraphqlWithFailover(
+  networkKey: 'odin' | 'heimdall' | 'thor',
+  body: any,
+  timeoutMs = 10000
+): Promise<{ json: any, endpointUsed: string }> {
+  const endpoints = getRpcEndpoints(networkKey)
+  let lastError: any = null
+  for (const endpoint of endpoints) {
+    try {
+      const resp = await fetchWithTimeout(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }, timeoutMs)
+      if (!resp.ok) {
+        // Retry only on transient/server-side statuses
+        if (RETRY_STATUS_CODES.has(resp.status)) {
+          const errText = await resp.text().catch(() => '')
+          console.warn(`[RPC] Non-OK (${resp.status}) from ${endpoint}, will try next. Body:`, errText)
+          lastError = new Error(`HTTP ${resp.status} ${resp.statusText}`)
+          continue
+        }
+        // For non-retryable statuses, throw immediately
+        const errText = await resp.text().catch(() => '')
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${errText}`)
+      }
+      const json = await resp.json()
+      return { json, endpointUsed: endpoint }
+    } catch (e: any) {
+      // Network/timeout/abort: try next endpoint
+      console.warn(`[RPC] Request error for ${endpoint}:`, e?.message || e)
+      lastError = e
+      continue
+    }
+  }
+  throw (lastError || new Error('All RPC endpoints failed'))
+}
 
 onMounted(async () => {
   // Check if wallet is available
@@ -583,7 +984,7 @@ onMounted(async () => {
   } else if (storedReadOnlyChain) {
     // User is in read-only mode
     isReadOnlyMode.value = true
-    const chain = (storedReadOnlyChain === 'heimdall' || storedReadOnlyChain === 'odin') ? storedReadOnlyChain : 'heimdall'
+    const chain = (storedReadOnlyChain === 'heimdall' || storedReadOnlyChain === 'odin' || storedReadOnlyChain === 'thor') ? storedReadOnlyChain : 'heimdall'
     readOnlyChain.value = chain
     walletData.value.currentNetworkName = chain.charAt(0).toUpperCase() + chain.slice(1)
   } else {
@@ -603,6 +1004,7 @@ onMounted(async () => {
   
   // Only load items if we have a connection or read-only mode
   if (stored || storedReadOnlyChain) {
+    loadSkillsForCategory()
     loadItems()
   }
 })
@@ -660,6 +1062,8 @@ async function connectWithChrono() {
         chainName = 'Heimdall'
       } else if (currentNetwork.id === '0x000000000000') {
         chainName = 'Odin'
+      } else if (currentNetwork.id === '0x000000000002') {
+        chainName = 'Thor'
       } else {
         chainName = 'Unknown'
       }
@@ -667,9 +1071,9 @@ async function connectWithChrono() {
       // Get balance
       let walletBalance = '-'
       try {
-        const endpoint = currentNetwork.id === '0x000000000001' 
-          ? 'https://heimdall-rpc-1.nine-chronicles.com/graphql'
-          : 'https://odin-rpc-1.nine-chronicles.com/graphql'
+        const networkKeyForBalance: 'odin' | 'heimdall' | 'thor' =
+          currentNetwork.id === '0x000000000001' ? 'heimdall'
+          : (currentNetwork.id === '0x000000000002' ? 'thor' : 'odin')
         
         const query = `
           query($addr: Address!) {
@@ -681,15 +1085,11 @@ async function connectWithChrono() {
           }
         `
         
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ query, variables: { addr: walletAddress } })
+        const { json: data, endpointUsed } = await postGraphqlWithFailover(networkKeyForBalance, {
+          query,
+          variables: { addr: walletAddress }
         })
-        
-        const data = await response.json()
+        console.log('[Balance] Queried via:', endpointUsed)
         if (data.data?.stateQuery?.agent?.gold !== undefined) {
           walletBalance = `${data.data.stateQuery.agent.gold} NCG`
         }
@@ -725,7 +1125,7 @@ async function connectWithChrono() {
   }
 }
 
-function selectReadOnlyChain(chain: 'heimdall' | 'odin') {
+function selectReadOnlyChain(chain: 'heimdall' | 'odin' | 'thor') {
   const previousChain = readOnlyChain.value
   const isNetworkSwitch = previousChain && previousChain !== chain
   
@@ -754,7 +1154,8 @@ function selectReadOnlyChain(chain: 'heimdall' | 'odin') {
     clearItemData()
   }
   
-  // Load items for the selected chain
+  // Load spells for current category (network-specific) and items
+  loadSkillsForCategory()
   loadItems()
 }
 
@@ -774,12 +1175,17 @@ function handleConnectFromHeader() {
   showChainSelector.value = false
 }
 
+function goToChronoSetup() {
+  showLoginModal.value = false
+  router.push('/chrono-setup')
+}
+
 async function refreshNetworkFromChrono() {
   if (!walletInstance.value) return
   try {
     const net = await walletInstance.value.getCurrentNetwork()
     if (net && net.id) {
-      const name = net.id === '0x000000000001' ? 'Heimdall' : (net.id === '0x000000000000' ? 'Odin' : walletData.value.currentNetworkName)
+      const name = net.id === '0x000000000001' ? 'Heimdall' : (net.id === '0x000000000000' ? 'Odin' : (net.id === '0x000000000002' ? 'Thor' : walletData.value.currentNetworkName))
       if (!walletData.value.currentNetworkName || walletData.value.currentNetworkName.toLowerCase() === 'unknown') {
         walletData.value.currentNetworkName = name
         // update session storage so header reflects it on reload
@@ -809,6 +1215,295 @@ const historySelectedItem = ref<ItemProduct | null>(null)
 // Cache for avatar address -> name
 const avatarNames = ref<Record<string, string>>({})
 
+// Avatar selection modal state
+const avatarSelectionVisible = ref(false)
+const availableAvatars = ref<Array<{ address: string; name: string }>>([])
+const selectedAvatarAddress = ref<string>('')
+const pendingPurchaseItem = ref<ItemProduct | null>(null)
+
+/**
+ * Fetches avatar states for the given agent address
+ * @param agentAddress - The agent address to query
+ * @param networkKey - The network key ('odin' | 'heimdall' | 'thor')
+ * @returns Promise<Array<{ address: string; name: string }>> - Array of avatar states
+ */
+async function fetchAvatarStates(agentAddress: string, networkKey: 'odin' | 'heimdall' | 'thor'): Promise<Array<{ address: string; name: string }>> {
+  try {
+    const query = `
+      query($addr: Address!) {
+        stateQuery {
+          agent(address: $addr) {
+            avatarStates {
+              address
+              name
+            }
+          }
+        }
+      }
+    `
+
+    const { json: data, endpointUsed } = await postGraphqlWithFailover(networkKey, {
+      query,
+      variables: { addr: agentAddress }
+    })
+    console.log('[Avatar] Queried via:', endpointUsed)
+
+    if (data.errors) {
+      throw new Error(data.errors[0]?.message || 'GraphQL error occurred')
+    }
+
+    const avatarStates = data.data?.stateQuery?.agent?.avatarStates || []
+    return avatarStates.map((avatar: any) => ({
+      address: avatar.address,
+      name: avatar.name
+    }))
+  } catch (err: any) {
+    console.error('[Avatar] Failed to fetch avatar states:', err)
+    throw err
+  }
+}
+
+/**
+ * Broadcasts a signed transaction to the Nine Chronicles network using stageTx mutation
+ * @param signedPayload - The signed transaction payload (hex string)
+ * @param networkKey - The network key ('odin' | 'heimdall' | 'thor')
+ * @returns Promise<string> - Transaction ID
+ */
+async function broadcastTransaction(signedPayload: string, networkKey: 'odin' | 'heimdall' | 'thor'): Promise<string> {
+  try {
+    // Remove 0x prefix if present - payload should NOT have 0x prefix
+    let payloadHex = signedPayload
+    if (payloadHex.startsWith('0x')) {
+      payloadHex = payloadHex.substring(2)
+    }
+
+    const mutation = `
+      mutation($payload: String!) {
+        stageTransaction(payload: $payload)
+      }
+    `
+
+    const requestBody = {
+      query: mutation,
+      variables: {
+        payload: payloadHex
+      }
+    }
+
+    const { json: data, endpointUsed } = await postGraphqlWithFailover(networkKey, requestBody)
+    console.log('[Broadcast] Used RPC endpoint:', endpointUsed)
+    console.log('[Broadcast] Response data:', data)
+
+    if (data.errors) {
+      const errorMessage = data.errors[0]?.message || 'GraphQL error occurred'
+      const errorDetails = data.errors[0]?.extensions || {}
+      console.error('[Broadcast] GraphQL errors:', data.errors)
+      throw new Error(`${errorMessage}${errorDetails.code ? ` (Code: ${errorDetails.code})` : ''}`)
+    }
+
+    // Return the transaction id
+    if (data.data?.stageTransaction) {
+      return data.data.stageTransaction as string
+    }
+    if (data.data?.stageTx) {
+      return data.data.stageTx as string
+    }
+
+    throw new Error('No transaction id returned from RPC node')
+  } catch (err: any) {
+    console.error('[Broadcast] Failed to broadcast transaction:', err)
+    console.error('[Broadcast] Error details:', {
+      message: err?.message,
+      stack: err?.stack,
+      response: err?.response
+    })
+    throw err
+  }
+}
+
+/**
+ * Proceeds with the purchase using the selected avatar address
+ */
+async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
+  try {
+    const networkKey = currentNetworkKey.value
+    console.log('[Buy] Requesting plainvalue from 9CAPI for', networkKey, 'network...')
+    console.log('[Buy] Item data:', {
+      productId: item.productId,
+      tradableId: item.tradableId,
+      sellerAgentAddress: item.sellerAgentAddress,
+      sellerAvatarAddress: item.sellerAvatarAddress,
+      price: item.price,
+      itemSubType: item.itemSubType,
+      avatarAddress: avatarAddress
+    })
+
+    // Validate required fields
+    if (!avatarAddress) {
+      throw new Error('Avatar address is required')
+    }
+    if (!item.tradableId) {
+      throw new Error('Item tradableId is required')
+    }
+    if (!item.productId) {
+      throw new Error('Item productId is required')
+    }
+    if (!item.sellerAgentAddress) {
+      throw new Error('Seller agent address is required')
+    }
+    if (!item.sellerAvatarAddress) {
+      throw new Error('Seller avatar address is required')
+    }
+    if (item.price === undefined || item.price === null) {
+      throw new Error('Item price is required')
+    }
+    if (item.itemSubType === undefined || item.itemSubType === null) {
+      throw new Error('Item subType is required')
+    }
+
+    // Helper function to ensure address has 0x prefix
+    const ensureHexPrefix = (address: string): string => {
+      if (!address) return address
+      const addr = String(address)
+      return addr.startsWith('0x') ? addr : '0x' + addr
+    }
+
+    // Call 9CAPI to generate the plainvalue payload
+    const apiUrl = networkKey === 'odin'
+      ? 'https://api.9capi.com/mobileBuyOdin'
+      : (networkKey === 'heimdall'
+        ? 'https://api.9capi.com/mobileBuyHeimdall'
+        : 'https://api.9capi.com/mobileBuyThor')
+    const requestData = {
+      avatarAddress: ensureHexPrefix(avatarAddress),
+      itemTradableId: String(item.tradableId),
+      itemProductId: String(item.productId),
+      sellerAgentAddress: ensureHexPrefix(item.sellerAgentAddress),
+      sellerAvatarAddress: ensureHexPrefix(item.sellerAvatarAddress),
+      price: Number(item.price),
+      itemSubType: Number(item.itemSubType)
+    }
+
+    let response: Response
+    try {
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(requestData),
+        mode: 'cors' // Explicitly set CORS mode
+      })
+    } catch (fetchError: any) {
+      console.error('[Buy] Fetch error (network/CORS):', fetchError)
+      throw new Error(`Network error: ${fetchError.message}. This might be a CORS issue or the API endpoint might be unreachable.`)
+    }
+
+    console.log('[Buy] Response status:', response.status)
+    console.log('[Buy] Response headers:', Object.fromEntries(response.headers.entries()))
+
+    if (!response.ok) {
+      let errorText = ''
+      try {
+        errorText = await response.text()
+        console.error('[Buy] 9CAPI error response body:', errorText)
+      } catch (e) {
+        console.error('[Buy] Could not read error response body:', e)
+        errorText = 'Could not read error response (might be a CORS issue)'
+      }
+      
+      // Try to parse as JSON if possible
+      let errorDetails = errorText
+      try {
+        const errorJson = JSON.parse(errorText)
+        errorDetails = JSON.stringify(errorJson, null, 2)
+      } catch {
+        // Not JSON, use as-is
+      }
+      
+      throw new Error(`9CAPI request failed: HTTP ${response.status}\n${errorDetails}`)
+    }
+
+    // Get the plainvalue string from the response
+    const raw = await response.json()
+    // API returns a JSON string (e.g., "6475...")
+    let plainvalueHex = typeof raw === 'string' ? raw : (raw?.plainvalue ?? raw?.data ?? '')
+    if (typeof plainvalueHex !== 'string' || plainvalueHex.length === 0) {
+      throw new Error('Invalid plainvalue from API')
+    }
+    // Remove surrounding quotes if any and strip 0x prefix
+    plainvalueHex = plainvalueHex.trim()
+    if (plainvalueHex.startsWith('"') && plainvalueHex.endsWith('"')) {
+      plainvalueHex = plainvalueHex.slice(1, -1)
+    }
+    if (plainvalueHex.startsWith('0x') || plainvalueHex.startsWith('0X')) {
+      plainvalueHex = plainvalueHex.slice(2)
+    }
+    // Validate hex
+    if (!/^[0-9a-fA-F]+$/.test(plainvalueHex)) {
+      throw new Error('Plainvalue is not a valid hex string')
+    }
+
+    // Sign the plainvalue hex
+    if (!walletInstance.value) {
+      throw new Error('Wallet instance not available')
+    }
+    
+    console.log('[Buy] Signing plainvalue with Chrono wallet...')
+    const signed = await walletInstance.value.signWithPlainValue(
+      walletData.value.walletAddress,
+      plainvalueHex
+    )
+    
+    // Derive hex string signature similar to ByteUtil.Hex(signature)
+    let signatureHex: string = ''
+    const toHex = (u8: Uint8Array) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
+    try {
+      if (typeof signed === 'string') {
+        signatureHex = signed.startsWith('0x') || signed.startsWith('0X') ? signed.slice(2) : signed
+      } else if (signed && typeof signed === 'object') {
+        if (typeof (signed as any).signature === 'string') {
+          const s = (signed as any).signature
+          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
+        } else if (typeof (signed as any).hex === 'string') {
+          const s = (signed as any).hex
+          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
+        } else if ((signed as any) instanceof Uint8Array) {
+          signatureHex = toHex(signed as unknown as Uint8Array)
+        } else if (typeof (signed as any).payload === 'string') {
+          const s = (signed as any).payload
+          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
+        }
+      }
+    } catch (e) {
+      console.warn('[Buy] Could not derive signature hex from result:', e)
+    }
+
+    // Auto-broadcast the signed transaction and open explorer link
+    try {
+      const txId = await broadcastTransaction(signatureHex, networkKey)
+      const explorerUrl = networkKey === 'odin'
+        ? `https://9cscan.com/tx/${txId}`
+        : (networkKey === 'heimdall'
+          ? `https://heimdall.9cscan.com/tx/${txId}`
+          : `https://thor.9cscan.com/tx/${txId}`)
+      console.log('[Broadcast] Transaction staged. TxId:', txId)
+      console.log('[Broadcast] Explorer URL:', explorerUrl)
+      // Open in a new tab for user convenience
+      openInNewTab(explorerUrl)
+      alert(`Purchase Request sent!\nTx: ${txId}\nOpen: ${explorerUrl}`)
+    } catch (e: any) {
+      console.error('[Broadcast] Broadcasting failed:', e)
+      alert(`Broadcast failed: ${e?.message || e}`)
+    }
+
+  } catch (err: any) {
+    console.error('Failed to process purchase:', err)
+    alert(`Transaction failed: ${err?.message || err}`)
+  }
+}
+
 async function onBuy(item: ItemProduct) {
   try {
     if (!walletInstance.value) {
@@ -823,36 +1518,63 @@ async function onBuy(item: ItemProduct) {
       return
     }
 
-    // Build a minimal valid Bencodex dictionary for action: { type_id: 'buy_product', values: { product_id: '<uuid>' } }
-    const dict = new BencodexDictionary([
-      ['type_id', 'buy_product'],
-      ['values', new BencodexDictionary([
-        ['product_id', String(item.productId)],
-      ])],
-    ])
-    const encoded = encode(dict)
-    const bytesToHex = (u8: Uint8Array) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
-    const actionHex = bytesToHex(encoded)
+    // Get the current network
+    const networkKey = currentNetworkKey.value
 
-    console.log('[Buy] Signing BuyProduct payload (Method 1):', {
-      productId: item.productId,
-      price: item.price,
-      itemId: item.itemId,
-      hexLength: actionHex.length
-    })
+    // Fetch avatar states for the agent
+    console.log('[Buy] Fetching avatar states for agent:', walletData.value.walletAddress)
+    const avatars = await fetchAvatarStates(walletData.value.walletAddress, networkKey)
+    
+    if (avatars.length === 0) {
+      alert('No avatars found for this agent address. Please create an avatar first.')
+      return
+    }
 
-    // Method 1: signWithPlainValue(signer, hex)
-    const signed = await walletInstance.value.signWithPlainValue(
-      walletData.value.walletAddress,
-      actionHex
-    )
+    // If only one avatar, use it directly
+    if (avatars.length === 1) {
+      console.log('[Buy] Single avatar found, using:', avatars[0])
+      await proceedWithPurchase(avatars[0].address, item)
+      return
+    }
 
-    console.log('[Buy] Signed payload result:', signed)
-    alert('Signed BuyProduct payload (not submitted). Check console for details.')
+    // Multiple avatars - show selection modal
+    console.log('[Buy] Multiple avatars found:', avatars)
+    availableAvatars.value = avatars
+    pendingPurchaseItem.value = item
+    selectedAvatarAddress.value = ''
+    avatarSelectionVisible.value = true
   } catch (err: any) {
-    console.error('Failed to sign BuyProduct action:', err)
-    alert(`Signing failed: ${err?.message || err}`)
+    console.error('Failed to initiate purchase:', err)
+    alert(`Failed to start purchase: ${err?.message || err}`)
   }
+}
+
+function selectAvatarAndProceed() {
+  if (!selectedAvatarAddress.value) {
+    alert('Please select an avatar.')
+    return
+  }
+  
+  if (!pendingPurchaseItem.value) {
+    alert('Purchase item not found.')
+    return
+  }
+
+  const selectedAvatar = availableAvatars.value.find(a => a.address === selectedAvatarAddress.value)
+  if (!selectedAvatar) {
+    alert('Selected avatar not found.')
+    return
+  }
+
+  avatarSelectionVisible.value = false
+  proceedWithPurchase(selectedAvatar.address, pendingPurchaseItem.value)
+}
+
+function closeAvatarSelection() {
+  avatarSelectionVisible.value = false
+  pendingPurchaseItem.value = null
+  selectedAvatarAddress.value = ''
+  availableAvatars.value = []
 }
 
 async function onHistory(item: ItemProduct) {
@@ -869,7 +1591,9 @@ async function onHistory(item: ItemProduct) {
 
     const historyPath = currentNetworkKey.value === 'heimdall' 
       ? 'https://api.9capi.com/marketHistoryHeimdall' 
-      : 'https://api.9capi.com/marketHistoryOdin'
+      : (currentNetworkKey.value === 'thor'
+        ? 'https://api.9capi.com/marketHistoryThor'
+        : 'https://api.9capi.com/marketHistoryOdin')
     const resp = await fetch(historyPath, {
       method: 'POST',
       headers: {
@@ -940,13 +1664,22 @@ async function loadItems() {
         return
       }
     }
-    const networkProvider = currentNetworkKey.value === 'heimdall' ? 'Heimdall' : 'Odin'
+    const networkProvider = currentNetworkKey.value === 'heimdall' ? 'Heimdall' : (currentNetworkKey.value === 'thor' ? 'Thor' : 'Odin')
     let elementalTypeParam = ''
     if (selectedElementalType.value !== null) {
       elementalTypeParam = `&elementalType=${selectedElementalType.value}`
     }
-    const url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${selectedCategory.value}?limit=${itemsPerPage}&offset=${offset}&order=${selectedOrder.value}${iconIdsParam}${elementalTypeParam}`
-    
+
+    let url: string
+    if (selectedSpellId.value !== null) {
+      // Use spell-specific endpoint
+      const spellParam = `&spellId=${selectedSpellId.value}`
+      url = `${SPELL_API_BASE}/marketProvider${networkProvider}/Market/products/items/spell/${selectedCategory.value}?limit=${itemsPerPage}&offset=${offset}&order=${selectedOrder.value}${spellParam}${elementalTypeParam}`
+    } else {
+      // Regular market endpoint
+      url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${selectedCategory.value}?limit=${itemsPerPage}&offset=${offset}&order=${selectedOrder.value}${iconIdsParam}${elementalTypeParam}`
+    }
+
     const response = await fetch(url)
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
@@ -975,6 +1708,7 @@ async function loadItems() {
 function selectCategory(categoryId: number) {
   selectedCategory.value = categoryId
   currentPage.value = 1 // Reset to first page when changing category
+  selectedSpellId.value = null // Reset spell filter when changing category
 
   // Reset search when changing equipment tab
   if (searchDebounce) {
@@ -985,6 +1719,7 @@ function selectCategory(categoryId: number) {
 
   // Clear old data before loading new category
   clearItemData()
+  loadSkillsForCategory()
   loadItems()
 }
 
@@ -1002,6 +1737,49 @@ function selectElementalType(elementalTypeId: number | null) {
   // Clear old data before loading new filter
   clearItemData()
   loadItems()
+}
+
+function selectSpell() {
+  currentPage.value = 1 // Reset to first page when changing spell filter
+  if (searchDebounce) {
+    clearTimeout(searchDebounce)
+    searchDebounce = null
+  }
+  searchQuery.value = ''
+  clearItemData()
+  loadItems()
+}
+
+async function loadSkillsForCategory() {
+  spellsLoading.value = true
+  availableSpellsForCategory.value = []
+  try {
+    const networkProvider = currentNetworkKey.value === 'heimdall' ? 'Heimdall' : (currentNetworkKey.value === 'thor' ? 'Thor' : 'Odin')
+    // Fetch more items to discover all spells for this category (Thorn, Concentration, Dispel, etc.)
+    const url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${selectedCategory.value}?limit=5000&offset=0&order=cp_desc`
+    const response = await fetch(url)
+    if (!response.ok) return
+    const data: MarketResponse = await response.json()
+    const itemProducts = data.itemProducts || []
+    const skillIds = new Set<number>()
+    for (const item of itemProducts) {
+      if (item.skillModels && Array.isArray(item.skillModels)) {
+        for (const sm of item.skillModels) {
+          if (typeof sm.skillId === 'number') skillIds.add(sm.skillId)
+        }
+      }
+    }
+    const spells: Array<{ id: number; name: string }> = []
+    for (const id of Array.from(skillIds).sort((a, b) => a - b)) {
+      const name = await getSkillName(id)
+      spells.push({ id, name })
+    }
+    availableSpellsForCategory.value = spells
+  } catch (err) {
+    console.error('Error loading spells for category:', err)
+  } finally {
+    spellsLoading.value = false
+  }
 }
 
 function onOrderChange() {
@@ -1144,10 +1922,7 @@ function shortAddress(addr: string): string {
 }
 
 // Avatar name resolution (Odin network)
-async function fetchAvatarName(address: string, network: 'odin' | 'heimdall'): Promise<string | null> {
-  const endpoint = network === 'heimdall'
-    ? 'https://heimdall-rpc-1.nine-chronicles.com/graphql'
-    : 'https://odin-rpc-1.nine-chronicles.com/graphql'
+async function fetchAvatarName(address: string, network: 'odin' | 'heimdall' | 'thor'): Promise<string | null> {
   try {
     // 1) Try avatar by avatarAddress
     const qAvatar = `
@@ -1155,13 +1930,12 @@ async function fetchAvatarName(address: string, network: 'odin' | 'heimdall'): P
         stateQuery { avatar(avatarAddress: $addr) { name } }
       }
     `
-    let resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: qAvatar, variables: { addr: address } })
+    let rpc1 = await postGraphqlWithFailover(network, {
+      query: qAvatar,
+      variables: { addr: address }
     })
-    if (resp.ok) {
-      const data = await resp.json()
+    if (rpc1?.json) {
+      const data = rpc1.json
       const name = data?.data?.stateQuery?.avatar?.name
       if (typeof name === 'string' && name.trim()) return name
     }
@@ -1172,13 +1946,11 @@ async function fetchAvatarName(address: string, network: 'odin' | 'heimdall'): P
         stateQuery { agent(address: $addr) { avatarStates { name } } }
       }
     `
-    resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: qAgent, variables: { addr: address } })
+    rpc1 = await postGraphqlWithFailover(network, {
+      query: qAgent,
+      variables: { addr: address }
     })
-    if (!resp.ok) return null
-    const data2 = await resp.json()
+    const data2 = rpc1.json
     const avatars: Array<{ name: string }> = data2?.data?.stateQuery?.agent?.avatarStates || []
     const candidate = avatars.find(a => a && typeof a.name === 'string' && a.name.trim())
     return candidate?.name || null
@@ -1187,7 +1959,7 @@ async function fetchAvatarName(address: string, network: 'odin' | 'heimdall'): P
   }
 }
 
-async function preloadAvatarNames(rows: HistoryRecord[], network: 'odin' | 'heimdall') {
+async function preloadAvatarNames(rows: HistoryRecord[], network: 'odin' | 'heimdall' | 'thor') {
   const unique = new Set<string>()
   for (const r of rows) {
     if (r.listavatar) unique.add(r.listavatar)
@@ -1329,6 +2101,34 @@ async function preloadSellerNames(list: ItemProduct[]) {
   gap: 0.5rem;
   flex-wrap: wrap;
   flex: 1;
+}
+
+.spell-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: #1a1f3a;
+  border-radius: 8px;
+  flex-wrap: wrap;
+  border: 1px solid #2d3748;
+}
+
+.spell-selector label {
+  font-weight: 600;
+  color: #cbd5e0;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.spell-select {
+  min-width: 180px;
+}
+
+.spell-loading-hint {
+  font-size: 0.85rem;
+  color: #94a3b8;
 }
 
 .elemental-btn {
@@ -2072,6 +2872,16 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .avatar-addr { color: #94a3b8; }
 
+.avatar-option.selected {
+  border-color: #4a90e2 !important;
+  background: #1e3a5f !important;
+}
+
+.avatar-option:hover {
+  border-color: #3d4757;
+  background: #252b42;
+}
+
 .page-info {
   color: #94a3b8;
   font-weight: 500;
@@ -2135,6 +2945,20 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
   .elemental-buttons {
     justify-content: center;
+  }
+
+  .spell-selector {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .spell-selector label {
+    text-align: center;
+  }
+
+  .spell-select {
+    min-width: 100%;
   }
 
   .elemental-btn {
@@ -2338,7 +3162,8 @@ async function preloadSellerNames(list: ItemProduct[]) {
   }
 
   .elemental-selector,
-  .ordering-selector {
+  .ordering-selector,
+  .spell-selector {
     padding: 0.5rem;
   }
 
@@ -2397,3 +3222,4 @@ async function preloadSellerNames(list: ItemProduct[]) {
   }
 }
 </style>
+

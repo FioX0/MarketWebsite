@@ -48,6 +48,91 @@ export function getStatTypeName(statType: number): string {
   return STAT_TYPES[statType] || `Stat ${statType}`
 }
 
+// Translate Korean item names to English when item_name.csv has no entry
+function translateKoreanItemNameToEnglish(name: string): string {
+  if (!name || !/[\uAC00-\uD7A3]/.test(name)) return name
+  let result = name
+  const translations: [string, string][] = [
+    ['커스텀 장비 무기', 'Custom Equipment Weapon'],
+    ['커스텀 장비 갑옷', 'Custom Equipment Armor'],
+    ['커스텀 장비 벨트', 'Custom Equipment Belt'],
+    ['커스텀 장비 목걸이', 'Custom Equipment Necklace'],
+    ['커스텀 장비 반지', 'Custom Equipment Ring'],
+  ]
+  for (const [kor, eng] of translations) {
+    result = result.split(kor).join(eng)
+  }
+  return result
+}
+
+// Translate Korean skill names to English when skill_name.csv has no entry
+function translateKoreanSkillNameToEnglish(name: string): string {
+  if (!name || !/[\uAC00-\uD7A3]/.test(name)) return name
+  let result = name
+  const translations: [RegExp | string, string][] = [
+    ['더블 어택', 'Twin Attack'],
+    ['치명 데미지 증가', 'Crit Damage Increase'],
+    ['치명 데미지 감소', 'Crit Damage Decrease'],
+    ['크리티컬 데미지 증가', 'Critical Damage Increase'],
+    ['크리티컬 데미지 감소', 'Critical Damage Decrease'],
+    ['기본 공격', 'Normal Attack'],
+    ['일격', 'Bash Attack'],
+    ['연사', 'Double Attack'],
+    ['광역 난사', 'Area Attack'],
+    ['체력 증가', 'Increases Health'],
+    ['공격 강화', 'Increases Attack'],
+    ['공격 약화', 'Decreases Attack'],
+    ['방어 강화', 'Defense Increase'],
+    ['방어 약화', 'Decreases Defense'],
+    ['치명 증가', 'Increases Critical'],
+    ['치명 감소', 'Decreases Critical'],
+    ['명중 증가', 'Increase Hit'],
+    ['명중 감소', 'Hit Reduction'],
+    ['속도 증가', 'Increases Speed'],
+    ['속도 감소', 'Decreases Speed'],
+    ['힐', 'Heal'],
+    ['기절', 'Stun'],
+    ['흡혈', 'Vampiric'],
+    ['집중', 'Concentration'],
+    ['트윈어택', 'Twin Attack'],
+    ['디스펠', 'Dispel'],
+    ['산산조각', 'Shatter'],
+    ['가시', 'Thorn'],
+    ['광란', 'Frenzied'],
+    ['양날의 검', 'Double Edged Sword'],
+    ['ATK 증가', 'ATK Increase'],
+    ['ATK 감소', 'ATK Decrease'],
+    ['DEF 증가', 'DEF Increase'],
+    ['DEF 감소', 'DEF Decrease'],
+    ['SPD 증가', 'SPD Increase'],
+    ['SPD 감소', 'SPD Decrease'],
+    ['HIT 증가', 'HIT Increase'],
+    ['HIT 감소', 'HIT Decrease'],
+    ['CRI 증가', 'CRI Increase'],
+    ['CRI 감소', 'CRI Decrease'],
+    ['회복', 'Heal'],
+    ['고정 수치', 'Fixed Value'],
+    ['고정 증가', 'Fixed Increase'],
+    ['비례 증가', 'Proportional Increase'],
+    ['비례 데미지', 'Proportional Damage'],
+    ['비례', 'Proportional'],
+    ['범위 피해 1타', 'AoE 1 Hit'],
+    ['범위 피해 5타', 'AoE 5 Hits'],
+    ['단일 전체 공격', 'Single AoE Attack'],
+    ['연속 전체 공격', 'Consecutive AoE Attack'],
+    ['받는 피해 감소', 'Damage Reduction'],
+    ['디스펠', 'Dispel'],
+    ['디버프 해제', 'Debuff Removal'],
+    ['모든 스텟 감소', 'All Stats Decrease'],
+    ['집중', 'Concentration'],
+    ['HP 비례 데미지', 'HP Proportional Damage'],
+  ]
+  for (const [kor, eng] of translations) {
+    result = result.split(kor).join(eng)
+  }
+  return result
+}
+
 function resolveStatTypeId(input: unknown): number | null {
   if (input === undefined || input === null) return null
   // Numeric already
@@ -234,22 +319,25 @@ async function loadEquipmentItems(): Promise<Map<number, ItemData>> {
 
   try {
     console.log('Loading equipment items from Lib9c CSV...')
-    const csvContent = await fetchCSVFromGitHub('EquipmentItemSheet.csv')
+    const [csvContent, itemNameCsv] = await Promise.all([
+      fetchCSVFromGitHub('EquipmentItemSheet.csv'),
+      fetchCSVFromNineChronicles('nekoyume/Assets/StreamingAssets/Localization/item_name.csv').catch(() => ''),
+    ])
     const items = parseCSV(csvContent)
-    
+
     console.log('Parsed items count:', items.length)
-    
+
     const itemMap = new Map<number, ItemData>()
-    
-    items.forEach((item: any, index: number) => {
+
+    items.forEach((item: any) => {
       // Try different possible ID field names
       const idValue = item.Id || item.id || item.ID || item.ItemId || item.itemId
       const id = parseInt(idValue)
-      
+
       if (!isNaN(id)) {
         // Try different possible name field names (including _name with underscore)
         const name = item.Name || item.name || item.NAME || item._name || item.ItemName || item.itemName || `Item ${id}`
-        
+
         itemMap.set(id, {
           id,
           name,
@@ -259,16 +347,32 @@ async function loadEquipmentItems(): Promise<Map<number, ItemData>> {
           itemSubType: parseInt(item.ItemSubType || item.itemSubType || item.ITEM_SUB_TYPE) || undefined,
           elementalType: parseInt(item.ElementalType || item.elementalType || item.ELEMENTAL_TYPE) || undefined
         })
-        
-        // Log first few successful mappings
-        if (index < 5) {
-          console.log(`Mapped item ${id}: "${name}"`)
-        }
       } else {
         console.warn('Could not parse ID for item:', item)
       }
     })
-    
+
+    // Override names with English from item_name.csv (key-based rows)
+    if (itemNameCsv) {
+      const lines = itemNameCsv.split('\n').filter(l => l.trim())
+      lines.forEach(line => {
+        const cols = line.split(',')
+        if (cols.length < 2) return
+        const key = cols[0].trim().replace(/"/g, '')
+        const enName = cols[1].trim().replace(/"/g, '')
+        const m = key.match(/^ITEM_NAME_(\d+)$/)
+        if (!m) return
+        const id = parseInt(m[1], 10)
+        if (Number.isNaN(id) || !enName) return
+        const existing = itemMap.get(id)
+        if (existing) {
+          existing.name = enName
+        } else {
+          itemMap.set(id, { id, name: enName })
+        }
+      })
+    }
+
     itemDataCache = itemMap
     console.log(`Successfully loaded ${itemMap.size} equipment items`)
     
@@ -492,15 +596,10 @@ function initializeElementalTypes(): Map<number, ElementalType> {
 
 // Public API functions
 export async function getItemName(itemId: number): Promise<string> {
-  console.log(`Getting name for item ID: ${itemId}`)
-  
   const items = await loadEquipmentItems()
-  console.log(`Loaded ${items.size} items from CSV`)
   const item = items.get(itemId)
-  console.log(`Item data for ${itemId}:`, item)
   const name = item?.name || `Item ${itemId}`
-  console.log(`Item ${itemId} -> "${name}"`)
-  return name
+  return translateKoreanItemNameToEnglish(name)
 }
 
 export async function getItemData(itemId: number): Promise<ItemData | null> {
@@ -513,8 +612,8 @@ export async function getSkillName(skillId: number): Promise<string> {
   const skills = await loadSkills()
   const skill = skills.get(skillId)
   if (skill && skill.name) {
-    console.log(`Skill ${skillId} -> "${skill.name}" (from CSV)`)
-    return skill.name
+    const name = translateKoreanSkillNameToEnglish(skill.name)
+    return name
   }
 
   const name = `Skill ${skillId}`
@@ -563,7 +662,7 @@ export async function getSkillDescription(skillId: number): Promise<string> {
   
   console.log(`Skill data for ${skillId}:`, skill)
   
-  let description = skill.name
+  let description = translateKoreanSkillNameToEnglish(skill.name)
   if (skill.description) {
     description += ` - ${skill.description}`
   }
