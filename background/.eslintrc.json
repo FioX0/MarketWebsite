@@ -1,9 +1,0 @@
-{
-  "extends": ["plugin:vue/base", "plugin:@typescript-eslint/eslint-recommended"],
-  "parserOptions": {
-    "ecmaVersion": 2018
-  },
-  "rules": {
-    "quotes": ["off", "single"]
-  }
-}
