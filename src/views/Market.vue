@@ -50,12 +50,13 @@
               >
                 Odin
               </button>
-              <button 
-                @click="selectReadOnlyChain('thor')" 
+              <button
                 class="btn btn-primary"
-                :class="{ 'btn-active': currentReadOnlyChain === 'thor' }"
+                disabled
+                title="Thor network is currently unavailable"
+                style="opacity: 0.4; cursor: not-allowed;"
               >
-                Thor
+                Thor <span style="font-size: 0.7em; margin-left: 4px;">(Unavailable)</span>
               </button>
             </div>
             <button @click="showChainSelector = false" class="btn btn-outline" style="margin-top: 1rem;">
@@ -288,9 +289,9 @@
           <div
             v-for="(item, index) in items"
             :key="item?.productId || index"
-            class="item-card"
+            :class="['item-card', item?.grade ? `card-grade-${item.grade}` : '']"
           >
-            <div class="item-image">
+            <div class="item-image" :class="item?.grade ? `img-grade-${item.grade}` : ''">
               <img
                 v-if="item && item.iconId"
                 :src="`https://raw.githubusercontent.com/planetarium/NineChronicles/development/nekoyume/Assets/Resources/UI/Icons/Item/${item.iconId}.png`"
@@ -527,6 +528,104 @@ import { preloadItemData, getItemName, getSkillName, getSkillDescription, getEle
 import { getChronoSdk } from '@planetarium/chrono-sdk'
 import { useRouter } from 'vue-router'
 
+// ── Security helpers ──────────────────────────────────────────────────────────
+
+/** Returns true only for a valid 40-char hex address (with or without 0x prefix). */
+function isValidAddress(address: unknown): boolean {
+  if (typeof address !== 'string' || !address) return false
+  const raw = address.startsWith('0x') || address.startsWith('0X') ? address.slice(2) : address
+  return /^[0-9a-fA-F]{40}$/.test(raw)
+}
+
+/**
+ * Ensures an address has the 0x prefix.
+ * Throws if the address is not a valid 40-char hex string.
+ */
+function ensureHexPrefix(address: string): string {
+  if (!isValidAddress(address)) {
+    throw new Error(`Invalid address format: "${address}"`)
+  }
+  return address.startsWith('0x') || address.startsWith('0X') ? address : ('0x' + address)
+}
+
+/** Strips a hex-encoded payload from its 0x prefix and validates it is pure hex. */
+function normalizeHex(raw: string): string {
+  const trimmed = raw.trim()
+  const stripped = (trimmed.startsWith('0x') || trimmed.startsWith('0X')) ? trimmed.slice(2) : trimmed
+  if (!/^[0-9a-fA-F]+$/.test(stripped)) {
+    throw new Error('Value is not a valid hex string')
+  }
+  return stripped
+}
+
+/**
+ * Extracts and validates a transaction signature returned by Chrono's
+ * signWithPlainValue().  Throws if the signature is empty or obviously malformed.
+ */
+function extractSignatureHex(signed: unknown): string {
+  const toHex = (u8: Uint8Array) =>
+    Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  let hex = ''
+  if (typeof signed === 'string') {
+    hex = signed
+  } else if (signed instanceof Uint8Array) {
+    hex = toHex(signed)
+  } else if (signed && typeof signed === 'object') {
+    const s = signed as Record<string, unknown>
+    if (typeof s.signature === 'string') hex = s.signature
+    else if (typeof s.hex === 'string')  hex = s.hex
+    else if (typeof s.payload === 'string') hex = s.payload
+    else if (s.data instanceof Uint8Array) hex = toHex(s.data)
+  }
+
+  hex = hex.trim()
+  if (hex.startsWith('0x') || hex.startsWith('0X')) hex = hex.slice(2)
+
+  if (!hex) {
+    throw new Error('Wallet returned an empty signature')
+  }
+  if (!/^[0-9a-fA-F]+$/.test(hex)) {
+    throw new Error('Wallet returned a non-hex signature')
+  }
+  // A valid Libplanet signed tx is at least a few hundred bytes; guard against trivially small values.
+  if (hex.length < 64) {
+    throw new Error(`Signature is too short (${hex.length} hex chars) — possible wallet error`)
+  }
+  return hex
+}
+
+/**
+ * Validates the wallet data object read from sessionStorage.
+ * Returns the validated data or null if the data is malformed.
+ */
+function parseStoredWalletData(raw: string): { walletAddress: string; walletBalance: string; currentNetworkName: string } | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+
+  const d = parsed as Record<string, unknown>
+
+  // walletAddress must be a valid 40-char address if present
+  const walletAddress = typeof d.walletAddress === 'string' ? d.walletAddress : ''
+  if (walletAddress && !isValidAddress(walletAddress)) return null
+
+  const walletBalance = typeof d.walletBalance === 'string' ? d.walletBalance.slice(0, 64) : ''
+  const ALLOWED_NETWORKS = new Set(['Odin', 'Heimdall', 'Thor', 'Unknown', ''])
+  const currentNetworkName = typeof d.currentNetworkName === 'string' ? d.currentNetworkName : ''
+  // Accept any casing variant of the known networks
+  const normalised = currentNetworkName.charAt(0).toUpperCase() + currentNetworkName.slice(1).toLowerCase()
+  const safeNetwork = ALLOWED_NETWORKS.has(normalised) ? (d.currentNetworkName as string) : ''
+
+  return { walletAddress, walletBalance, currentNetworkName: safeNetwork }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface ItemProduct {
   productId: string
   sellerAgentAddress: string
@@ -556,12 +655,12 @@ interface ItemProduct {
     statPowerRatio: number
     chance: number
     referencedStatType: number
-  }>
+  }> | null
   statModels: Array<{
     value: number
     type: number
     additional: boolean
-  }>
+  }> | null
   optionCountFromCombination: number
   unitPrice: number
   crystal: number
@@ -703,7 +802,7 @@ function openInNewTab(url: string) {
   try {
     const win = window.open(url, '_blank', 'noopener')
     if (win) return
-  } catch (_) { /* fall through */ }
+  } catch { /* fall through to anchor method */ }
   const a = document.createElement('a')
   a.href = url
   a.target = '_blank'
@@ -791,10 +890,7 @@ async function submitTransfer() {
     if (!recipient) return alert('Unsupported bridge route.')
 
     // Build actionQuery.transferAsset on the current network's GraphQL
-    const ensureHexPrefix = (address: string): string => {
-      const addr = String(address || '')
-      return addr.startsWith('0x') ? addr : ('0x' + addr)
-    }
+    // (ensureHexPrefix is the module-level validated version)
     // Amount must be string; format to at most 2 decimals
     const amountStr = amountNCG.toFixed(2).replace(/\.?0+$/,'') // trim trailing zeros but keep integer when possible
     const gql = `
@@ -816,48 +912,27 @@ async function submitTransfer() {
       query: gql,
       variables
     })
-    console.log('[Bridge] transferAsset via:', endpointUsed, transferResp)
+    if (import.meta.env.DEV) console.log('[Bridge] transferAsset endpoint:', endpointUsed)
     if (transferResp?.errors && transferResp.errors.length) {
       throw new Error(transferResp.errors[0]?.message || 'GraphQL error during transferAsset')
     }
-    let plainvalueHex = transferResp?.data?.actionQuery?.transferAsset
-    if (typeof plainvalueHex !== 'string' || plainvalueHex.length === 0) {
+    const rawPlainvalue = transferResp?.data?.actionQuery?.transferAsset
+    if (typeof rawPlainvalue !== 'string' || rawPlainvalue.length === 0) {
       throw new Error('Invalid transferAsset response')
     }
-    plainvalueHex = plainvalueHex.trim()
-    if (plainvalueHex.startsWith('"') && plainvalueHex.endsWith('"')) {
-      plainvalueHex = plainvalueHex.slice(1, -1)
+    // Strip surrounding quotes if the server double-encoded the value
+    const unquoted = rawPlainvalue.trim().replace(/^"|"$/g, '')
+    if (unquoted.length > 200_000) {
+      throw new Error('transferAsset response is unexpectedly large')
     }
-    if (plainvalueHex.startsWith('0x') || plainvalueHex.startsWith('0X')) {
-      plainvalueHex = plainvalueHex.slice(2)
-    }
-    if (!/^[0-9a-fA-F]+$/.test(plainvalueHex)) {
-      throw new Error('Plainvalue is not a valid hex string')
-    }
+    const plainvalueHex = normalizeHex(unquoted)
 
-    console.log('[Bridge] Signing plainvalue...')
+    if (import.meta.env.DEV) console.log('[Bridge] Signing plainvalue...')
     const signed = await walletInstance.value.signWithPlainValue(
       walletData.value.walletAddress,
       plainvalueHex
     )
-    let payloadHex = ''
-    const toHex = (u8: Uint8Array) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
-    if (typeof signed === 'string') {
-      payloadHex = signed.startsWith('0x') || signed.startsWith('0X') ? signed.slice(2) : signed
-    } else if (signed && typeof signed === 'object') {
-      if (typeof (signed as any).hex === 'string') {
-        const s = (signed as any).hex
-        payloadHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
-      } else if ((signed as any) instanceof Uint8Array) {
-        payloadHex = toHex(signed as unknown as Uint8Array)
-      } else if (typeof (signed as any).payload === 'string') {
-        const s = (signed as any).payload
-        payloadHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
-      }
-    }
-    if (!payloadHex) {
-      throw new Error('Failed to derive signed payload')
-    }
+    const payloadHex = extractSignatureHex(signed)
 
     const txId = await broadcastTransaction(payloadHex, source)
     const explorer = source === 'odin'
@@ -979,7 +1054,7 @@ onMounted(async () => {
     try {
       await refreshNetworkFromChrono()
     } catch (e) {
-      // ignore
+      if (import.meta.env.DEV) console.warn('[onMounted] refreshNetworkFromChrono failed:', e)
     }
   } else if (storedReadOnlyChain) {
     // User is in read-only mode
@@ -1011,14 +1086,14 @@ onMounted(async () => {
 
 function loadWalletData() {
   const stored = sessionStorage.getItem('walletData')
-  if (stored) {
-    const data = JSON.parse(stored)
-    walletData.value = {
-      walletAddress: data.walletAddress || '',
-      walletBalance: data.walletBalance || '',
-      currentNetworkName: data.currentNetworkName || ''
-    }
+  if (!stored) return
+  const data = parseStoredWalletData(stored)
+  if (!data) {
+    console.warn('[loadWalletData] sessionStorage contained invalid wallet data — clearing')
+    sessionStorage.removeItem('walletData')
+    return
   }
+  walletData.value = data
 }
 
 async function checkWalletAvailability() {
@@ -1049,7 +1124,7 @@ async function connectWithChrono() {
     }
     
     const accounts = await wallet.connect()
-    console.log('Connect result:', accounts)
+    if (import.meta.env.DEV) console.log('Connect result:', accounts)
     
     if (accounts && accounts.length > 0) {
       const walletAddress = accounts[0]
@@ -1089,7 +1164,7 @@ async function connectWithChrono() {
           query,
           variables: { addr: walletAddress }
         })
-        console.log('[Balance] Queried via:', endpointUsed)
+        if (import.meta.env.DEV) console.log('[Balance] Queried via:', endpointUsed)
         if (data.data?.stateQuery?.agent?.gold !== undefined) {
           walletBalance = `${data.data.stateQuery.agent.gold} NCG`
         }
@@ -1198,7 +1273,9 @@ async function refreshNetworkFromChrono() {
         }))
       }
     }
-  } catch (_) { /* noop */ }
+  } catch (e) {
+    if (import.meta.env.DEV) console.warn('[refreshNetworkFromChrono] failed:', e)
+  }
 }
 
 // Wallet instance for signing (Method 1)
@@ -1246,7 +1323,7 @@ async function fetchAvatarStates(agentAddress: string, networkKey: 'odin' | 'hei
       query,
       variables: { addr: agentAddress }
     })
-    console.log('[Avatar] Queried via:', endpointUsed)
+    if (import.meta.env.DEV) console.log('[Avatar] Queried via:', endpointUsed)
 
     if (data.errors) {
       throw new Error(data.errors[0]?.message || 'GraphQL error occurred')
@@ -1291,8 +1368,7 @@ async function broadcastTransaction(signedPayload: string, networkKey: 'odin' | 
     }
 
     const { json: data, endpointUsed } = await postGraphqlWithFailover(networkKey, requestBody)
-    console.log('[Broadcast] Used RPC endpoint:', endpointUsed)
-    console.log('[Broadcast] Response data:', data)
+    if (import.meta.env.DEV) console.log('[Broadcast] Used RPC endpoint:', endpointUsed)
 
     if (data.errors) {
       const errorMessage = data.errors[0]?.message || 'GraphQL error occurred'
@@ -1327,16 +1403,7 @@ async function broadcastTransaction(signedPayload: string, networkKey: 'odin' | 
 async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
   try {
     const networkKey = currentNetworkKey.value
-    console.log('[Buy] Requesting plainvalue from 9CAPI for', networkKey, 'network...')
-    console.log('[Buy] Item data:', {
-      productId: item.productId,
-      tradableId: item.tradableId,
-      sellerAgentAddress: item.sellerAgentAddress,
-      sellerAvatarAddress: item.sellerAvatarAddress,
-      price: item.price,
-      itemSubType: item.itemSubType,
-      avatarAddress: avatarAddress
-    })
+    if (import.meta.env.DEV) console.log('[Buy] Requesting plainvalue from 9CAPI for', networkKey, 'network...')
 
     // Validate required fields
     if (!avatarAddress) {
@@ -1359,13 +1426,6 @@ async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
     }
     if (item.itemSubType === undefined || item.itemSubType === null) {
       throw new Error('Item subType is required')
-    }
-
-    // Helper function to ensure address has 0x prefix
-    const ensureHexPrefix = (address: string): string => {
-      if (!address) return address
-      const addr = String(address)
-      return addr.startsWith('0x') ? addr : '0x' + addr
     }
 
     // Call 9CAPI to generate the plainvalue payload
@@ -1400,8 +1460,7 @@ async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
       throw new Error(`Network error: ${fetchError.message}. This might be a CORS issue or the API endpoint might be unreachable.`)
     }
 
-    console.log('[Buy] Response status:', response.status)
-    console.log('[Buy] Response headers:', Object.fromEntries(response.headers.entries()))
+    if (import.meta.env.DEV) console.log('[Buy] Response status:', response.status)
 
     if (!response.ok) {
       let errorText = ''
@@ -1428,57 +1487,27 @@ async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
     // Get the plainvalue string from the response
     const raw = await response.json()
     // API returns a JSON string (e.g., "6475...")
-    let plainvalueHex = typeof raw === 'string' ? raw : (raw?.plainvalue ?? raw?.data ?? '')
-    if (typeof plainvalueHex !== 'string' || plainvalueHex.length === 0) {
+    const rawPlainvalue = typeof raw === 'string' ? raw : (raw?.plainvalue ?? raw?.data ?? '')
+    if (typeof rawPlainvalue !== 'string' || rawPlainvalue.length === 0) {
       throw new Error('Invalid plainvalue from API')
     }
-    // Remove surrounding quotes if any and strip 0x prefix
-    plainvalueHex = plainvalueHex.trim()
-    if (plainvalueHex.startsWith('"') && plainvalueHex.endsWith('"')) {
-      plainvalueHex = plainvalueHex.slice(1, -1)
+    if (rawPlainvalue.length > 200_000) {
+      throw new Error('Plainvalue response is unexpectedly large')
     }
-    if (plainvalueHex.startsWith('0x') || plainvalueHex.startsWith('0X')) {
-      plainvalueHex = plainvalueHex.slice(2)
-    }
-    // Validate hex
-    if (!/^[0-9a-fA-F]+$/.test(plainvalueHex)) {
-      throw new Error('Plainvalue is not a valid hex string')
-    }
+    const unquotedBuy = rawPlainvalue.trim().replace(/^"|"$/g, '')
+    const plainvalueHex = normalizeHex(unquotedBuy)
 
     // Sign the plainvalue hex
     if (!walletInstance.value) {
       throw new Error('Wallet instance not available')
     }
     
-    console.log('[Buy] Signing plainvalue with Chrono wallet...')
+    if (import.meta.env.DEV) console.log('[Buy] Signing plainvalue with Chrono wallet...')
     const signed = await walletInstance.value.signWithPlainValue(
       walletData.value.walletAddress,
       plainvalueHex
     )
-    
-    // Derive hex string signature similar to ByteUtil.Hex(signature)
-    let signatureHex: string = ''
-    const toHex = (u8: Uint8Array) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('')
-    try {
-      if (typeof signed === 'string') {
-        signatureHex = signed.startsWith('0x') || signed.startsWith('0X') ? signed.slice(2) : signed
-      } else if (signed && typeof signed === 'object') {
-        if (typeof (signed as any).signature === 'string') {
-          const s = (signed as any).signature
-          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
-        } else if (typeof (signed as any).hex === 'string') {
-          const s = (signed as any).hex
-          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
-        } else if ((signed as any) instanceof Uint8Array) {
-          signatureHex = toHex(signed as unknown as Uint8Array)
-        } else if (typeof (signed as any).payload === 'string') {
-          const s = (signed as any).payload
-          signatureHex = s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s
-        }
-      }
-    } catch (e) {
-      console.warn('[Buy] Could not derive signature hex from result:', e)
-    }
+    const signatureHex = extractSignatureHex(signed)
 
     // Auto-broadcast the signed transaction and open explorer link
     try {
@@ -1488,8 +1517,7 @@ async function proceedWithPurchase(avatarAddress: string, item: ItemProduct) {
         : (networkKey === 'heimdall'
           ? `https://heimdall.9cscan.com/tx/${txId}`
           : `https://thor.9cscan.com/tx/${txId}`)
-      console.log('[Broadcast] Transaction staged. TxId:', txId)
-      console.log('[Broadcast] Explorer URL:', explorerUrl)
+      if (import.meta.env.DEV) console.log('[Broadcast] Transaction staged. TxId:', txId)
       // Open in a new tab for user convenience
       openInNewTab(explorerUrl)
       alert(`Purchase Request sent!\nTx: ${txId}\nOpen: ${explorerUrl}`)
@@ -1522,7 +1550,7 @@ async function onBuy(item: ItemProduct) {
     const networkKey = currentNetworkKey.value
 
     // Fetch avatar states for the agent
-    console.log('[Buy] Fetching avatar states for agent:', walletData.value.walletAddress)
+    if (import.meta.env.DEV) console.log('[Buy] Fetching avatar states...')
     const avatars = await fetchAvatarStates(walletData.value.walletAddress, networkKey)
     
     if (avatars.length === 0) {
@@ -1532,13 +1560,11 @@ async function onBuy(item: ItemProduct) {
 
     // If only one avatar, use it directly
     if (avatars.length === 1) {
-      console.log('[Buy] Single avatar found, using:', avatars[0])
       await proceedWithPurchase(avatars[0].address, item)
       return
     }
 
     // Multiple avatars - show selection modal
-    console.log('[Buy] Multiple avatars found:', avatars)
     availableAvatars.value = avatars
     pendingPurchaseItem.value = item
     selectedAvatarAddress.value = ''
@@ -1594,14 +1620,14 @@ async function onHistory(item: ItemProduct) {
       : (currentNetworkKey.value === 'thor'
         ? 'https://api.9capi.com/marketHistoryThor'
         : 'https://api.9capi.com/marketHistoryOdin')
-    const resp = await fetch(historyPath, {
+    const resp = await fetchWithTimeout(historyPath, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'accept': 'application/json'
       },
       body: JSON.stringify({ itemGUID: historyForProductId.value })
-    })
+    }, 10000)
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`)
     }
@@ -1629,7 +1655,7 @@ async function resolveItemNames(items: ItemProduct[]) {
     itemNames.value.set(item.itemId, itemName)
     
     // Resolve skill names and descriptions
-    const skillPromises = item.skillModels.map(async (skill) => {
+    const skillPromises = (item.skillModels ?? []).map(async (skill) => {
       const skillName = await getSkillName(skill.skillId)
       const skillDescription = await getSkillDescription(skill.skillId)
       skillNames.value.set(skill.skillId, skillName)
@@ -1652,9 +1678,10 @@ async function loadItems() {
   try {
     const offset = (currentPage.value - 1) * itemsPerPage
     // If search query is present, resolve iconIds from CSV (token-based match) and include them in the API request
+    const MAX_SEARCH_LEN = 200
     let iconIdsParam = ''
     if (searchQuery.value && searchQuery.value.trim()) {
-      const iconIds = await findIconIdsByName(searchQuery.value)
+      const iconIds = await findIconIdsByName(searchQuery.value.slice(0, MAX_SEARCH_LEN))
       if (iconIds.length > 0) {
         iconIdsParam = iconIds.map(id => `&iconIds=${encodeURIComponent(String(id))}`).join('')
       } else {
@@ -1664,20 +1691,26 @@ async function loadItems() {
         return
       }
     }
+    // Whitelist networkProvider — derived from a computed ternary, but encode defensively
+    const ALLOWED_PROVIDERS = new Set(['Odin', 'Heimdall', 'Thor'])
     const networkProvider = currentNetworkKey.value === 'heimdall' ? 'Heimdall' : (currentNetworkKey.value === 'thor' ? 'Thor' : 'Odin')
+    if (!ALLOWED_PROVIDERS.has(networkProvider)) throw new Error('Unknown network provider')
+
+    // All user-influenced query params are encoded
+    const safeOrder = encodeURIComponent(selectedOrder.value)
     let elementalTypeParam = ''
     if (selectedElementalType.value !== null) {
-      elementalTypeParam = `&elementalType=${selectedElementalType.value}`
+      elementalTypeParam = `&elementalType=${encodeURIComponent(String(selectedElementalType.value))}`
     }
 
     let url: string
     if (selectedSpellId.value !== null) {
       // Use spell-specific endpoint
-      const spellParam = `&spellId=${selectedSpellId.value}`
-      url = `${SPELL_API_BASE}/marketProvider${networkProvider}/Market/products/items/spell/${selectedCategory.value}?limit=${itemsPerPage}&offset=${offset}&order=${selectedOrder.value}${spellParam}${elementalTypeParam}`
+      const spellParam = `&spellId=${encodeURIComponent(String(selectedSpellId.value))}`
+      url = `${SPELL_API_BASE}/marketProvider${networkProvider}/Market/products/items/spell/${encodeURIComponent(String(selectedCategory.value))}?limit=${itemsPerPage}&offset=${offset}&order=${safeOrder}${spellParam}${elementalTypeParam}`
     } else {
       // Regular market endpoint
-      url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${selectedCategory.value}?limit=${itemsPerPage}&offset=${offset}&order=${selectedOrder.value}${iconIdsParam}${elementalTypeParam}`
+      url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${encodeURIComponent(String(selectedCategory.value))}?limit=${itemsPerPage}&offset=${offset}&order=${safeOrder}${iconIdsParam}${elementalTypeParam}`
     }
 
     const response = await fetch(url)
@@ -1756,7 +1789,7 @@ async function loadSkillsForCategory() {
   try {
     const networkProvider = currentNetworkKey.value === 'heimdall' ? 'Heimdall' : (currentNetworkKey.value === 'thor' ? 'Thor' : 'Odin')
     // Fetch more items to discover all spells for this category (Thorn, Concentration, Dispel, etc.)
-    const url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${selectedCategory.value}?limit=5000&offset=0&order=cp_desc`
+    const url = `https://api.9capi.com/marketProvider${networkProvider}/Market/products/items/${encodeURIComponent(String(selectedCategory.value))}?limit=5000&offset=0&order=cp_desc`
     const response = await fetch(url)
     if (!response.ok) return
     const data: MarketResponse = await response.json()
@@ -1954,7 +1987,8 @@ async function fetchAvatarName(address: string, network: 'odin' | 'heimdall' | '
     const avatars: Array<{ name: string }> = data2?.data?.stateQuery?.agent?.avatarStates || []
     const candidate = avatars.find(a => a && typeof a.name === 'string' && a.name.trim())
     return candidate?.name || null
-  } catch (_) {
+  } catch (err) {
+    if (import.meta.env.DEV) console.warn('[fetchAvatarName] Failed for address', address, err)
     return null
   }
 }
@@ -2008,18 +2042,22 @@ async function preloadSellerNames(list: ItemProduct[]) {
 </script>
 
 <style scoped>
+/* ── Base ── */
 .market-page {
   min-height: 100vh;
-  background: #0a0e27;
+  background: #080b20;
   color: #e2e8f0;
+  background-image:
+    radial-gradient(ellipse 80% 40% at 50% -10%, rgba(99, 102, 241, 0.12) 0%, transparent 60%),
+    url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.014'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
 }
 
 .market-content {
-  padding: 2rem 0;
+  padding: 1.75rem 0 3rem;
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 2rem;
 }
@@ -2030,7 +2068,7 @@ async function preloadSellerNames(list: ItemProduct[]) {
   align-items: center;
   margin-bottom: 2rem;
   padding-bottom: 1rem;
-  border-bottom: 2px solid #2d3748;
+  border-bottom: 2px solid #1e2545;
 }
 
 .market-header h1 {
@@ -2040,65 +2078,70 @@ async function preloadSellerNames(list: ItemProduct[]) {
   font-weight: 700;
 }
 
+/* ── Filter Controls ── */
 .category-selector {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 2rem;
-  padding: 1rem;
-  background: #1a1f3a;
-  border-radius: 8px;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem;
+  background: rgba(26, 31, 58, 0.6);
+  border-radius: 12px;
   flex-wrap: wrap;
-  border: 1px solid #2d3748;
+  border: 1px solid rgba(45, 55, 72, 0.7);
+  backdrop-filter: blur(8px);
 }
 
 .category-btn {
-  background: #252b42;
-  border: 2px solid #3d4757;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
+  background: rgba(37, 43, 66, 0.8);
+  border: 1px solid rgba(61, 71, 87, 0.6);
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
-  color: #cbd5e0;
+  transition: all 0.18s ease;
+  color: #94a3b8;
+  letter-spacing: 0.2px;
 }
 
 .category-btn:hover {
-  background: #2d3748;
-  border-color: #6366f1;
+  background: rgba(45, 55, 72, 0.9);
+  border-color: rgba(99, 102, 241, 0.5);
   color: #e2e8f0;
   transform: translateY(-1px);
 }
 
 .category-btn.active {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.9) 0%, rgba(139, 92, 246, 0.9) 100%);
   color: white;
-  border-color: #8b5cf6;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+  border-color: rgba(139, 92, 246, 0.5);
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.35), inset 0 1px 0 rgba(255,255,255,0.1);
 }
 
 .elemental-selector {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  background: #1a1f3a;
-  border-radius: 8px;
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(26, 31, 58, 0.5);
+  border-radius: 10px;
   flex-wrap: wrap;
-  border: 1px solid #2d3748;
+  border: 1px solid rgba(45, 55, 72, 0.6);
 }
 
 .elemental-selector label {
   font-weight: 600;
-  color: #cbd5e0;
-  font-size: 0.9rem;
+  color: #64748b;
+  font-size: 0.78rem;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 }
 
 .elemental-buttons {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
   flex-wrap: wrap;
   flex: 1;
 }
@@ -2107,19 +2150,21 @@ async function preloadSellerNames(list: ItemProduct[]) {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  background: #1a1f3a;
-  border-radius: 8px;
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(26, 31, 58, 0.5);
+  border-radius: 10px;
   flex-wrap: wrap;
-  border: 1px solid #2d3748;
+  border: 1px solid rgba(45, 55, 72, 0.6);
 }
 
 .spell-selector label {
   font-weight: 600;
-  color: #cbd5e0;
-  font-size: 0.9rem;
+  color: #64748b;
+  font-size: 0.78rem;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 }
 
 .spell-select {
@@ -2127,34 +2172,34 @@ async function preloadSellerNames(list: ItemProduct[]) {
 }
 
 .spell-loading-hint {
-  font-size: 0.85rem;
-  color: #94a3b8;
+  font-size: 0.82rem;
+  color: #64748b;
+  font-style: italic;
 }
 
 .elemental-btn {
-  background: #252b42;
-  border: 2px solid #3d4757;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
+  background: rgba(37, 43, 66, 0.8);
+  border: 1px solid rgba(61, 71, 87, 0.5);
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
-  color: #cbd5e0;
+  transition: all 0.18s ease;
+  color: #94a3b8;
   white-space: nowrap;
 }
 
 .elemental-btn:hover {
-  background: #2d3748;
-  border-color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.4);
   color: #e2e8f0;
 }
 
 .elemental-btn.active {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.85) 0%, rgba(139, 92, 246, 0.85) 100%);
   color: white;
-  border-color: #8b5cf6;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
 .ordering-selector {
@@ -2162,41 +2207,43 @@ async function preloadSellerNames(list: ItemProduct[]) {
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  background: #1a1f3a;
-  border-radius: 8px;
+  padding: 0.65rem 0.9rem;
+  background: rgba(26, 31, 58, 0.5);
+  border-radius: 10px;
   flex-wrap: wrap;
-  border: 1px solid #2d3748;
+  border: 1px solid rgba(45, 55, 72, 0.6);
 }
 
 .ordering-selector label {
   font-weight: 600;
-  color: #cbd5e0;
-  font-size: 0.9rem;
+  color: #64748b;
+  font-size: 0.78rem;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 }
 
 .order-select {
-  background: #252b42;
-  border: 2px solid #3d4757;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
+  background: rgba(37, 43, 66, 0.9);
+  border: 1px solid rgba(61, 71, 87, 0.6);
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
   color: #e2e8f0;
   min-width: 200px;
 }
 
 .order-select:hover {
-  border-color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.4);
 }
 
 .order-select:focus {
   outline: none;
   border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 .search-box {
@@ -2207,50 +2254,47 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .search-input {
   width: 100%;
-  max-width: 280px;
-  background: #252b42;
-  border: 2px solid #3d4757;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
+  max-width: 300px;
+  background: rgba(37, 43, 66, 0.9);
+  border: 1px solid rgba(61, 71, 87, 0.6);
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
   color: #e2e8f0;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
 }
 
 .search-input:focus {
   outline: none;
   border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 .search-input::placeholder {
-  color: #94a3b8;
+  color: #4a5568;
 }
 
+/* ── Misc ── */
 .market-stats {
   display: flex;
   gap: 2rem;
   color: #94a3b8;
 }
 
-.stat {
-  font-size: 0.9rem;
-}
-
 .loading {
   text-align: center;
-  padding: 4rem 0;
-  color: #cbd5e0;
+  padding: 5rem 0;
+  color: #94a3b8;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #2d3748;
-  border-top: 4px solid #6366f1;
+  width: 44px;
+  height: 44px;
+  border: 3px solid rgba(99, 102, 241, 0.12);
+  border-top: 3px solid #6366f1;
   border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin: 0 auto 1rem;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 1.25rem;
 }
 
 @keyframes spin {
@@ -2260,7 +2304,7 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .error {
   text-align: center;
-  padding: 4rem 0;
+  padding: 5rem 0;
 }
 
 .error-icon {
@@ -2269,91 +2313,193 @@ async function preloadSellerNames(list: ItemProduct[]) {
 }
 
 .error h3 {
-  color: #ef4444;
-  margin: 0 0 1rem 0;
+  color: #f87171;
+  margin: 0 0 0.75rem 0;
 }
 
 .error p {
-  color: #94a3b8;
+  color: #64748b;
   margin: 0 0 2rem 0;
 }
 
+/* ── Items Grid ── */
 .items-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
   gap: 1.25rem;
   margin-bottom: 3rem;
 }
 
+/* ── Item Card ── */
 .item-card {
-  background: #1a1f3a;
-  border: 1px solid #2d3748;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  background: linear-gradient(160deg, #131830 0%, #0f1428 100%);
+  border: 1px solid rgba(30, 37, 69, 0.9);
+  border-top: 2px solid rgba(45, 55, 90, 0.9);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.03);
   overflow: hidden;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.22s ease, border-color 0.22s ease;
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
+}
+
+.item-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(99, 102, 241, 0.6) 50%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.2s;
 }
 
 .item-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
-  border-color: #6366f1;
+  box-shadow: 0 12px 32px rgba(99, 102, 241, 0.18), 0 4px 16px rgba(0,0,0,0.5);
+  border-color: rgba(99, 102, 241, 0.4);
 }
 
+.item-card:hover::before {
+  opacity: 1;
+}
+
+/* Grade-specific card accents */
+.card-grade-5 { border-top-color: rgba(202, 138, 4, 0.8); }
+.card-grade-5:hover { box-shadow: 0 12px 32px rgba(202, 138, 4, 0.18), 0 4px 16px rgba(0,0,0,0.5); border-color: rgba(202, 138, 4, 0.45); }
+.card-grade-5::before { background: linear-gradient(90deg, transparent 0%, rgba(234, 179, 8, 0.7) 50%, transparent 100%); }
+
+.card-grade-6 { border-top-color: rgba(234, 88, 12, 0.8); }
+.card-grade-6:hover { box-shadow: 0 12px 32px rgba(234, 88, 12, 0.2), 0 4px 16px rgba(0,0,0,0.5); border-color: rgba(234, 88, 12, 0.45); }
+.card-grade-6::before { background: linear-gradient(90deg, transparent 0%, rgba(249, 115, 22, 0.7) 50%, transparent 100%); }
+
+.card-grade-7 { border-top-color: rgba(219, 39, 119, 0.85); }
+.card-grade-7:hover { box-shadow: 0 12px 32px rgba(219, 39, 119, 0.22), 0 4px 16px rgba(0,0,0,0.5); border-color: rgba(219, 39, 119, 0.5); }
+.card-grade-7::before { background: linear-gradient(90deg, transparent 0%, rgba(236, 72, 153, 0.8) 50%, transparent 100%); }
+
+.card-grade-8 { border-top-color: rgba(6, 182, 212, 0.9); }
+.card-grade-8:hover { box-shadow: 0 12px 32px rgba(6, 182, 212, 0.2), 0 4px 16px rgba(0,0,0,0.5); border-color: rgba(6, 182, 212, 0.5); }
+.card-grade-8::before { background: linear-gradient(90deg, transparent 0%, rgba(6, 182, 212, 0.85) 50%, transparent 100%); }
+
+/* ── Item Image ── */
 .item-image {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-  height: 120px;
+  background: linear-gradient(145deg, #1a1f40 0%, #14193a 50%, #0f1330 100%);
+  height: 130px;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
   overflow: hidden;
 }
+
+.item-image::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* Grade image backgrounds */
+.img-grade-1, .img-grade-2 { background: linear-gradient(145deg, #1a1f2e 0%, #141820 100%); }
+.img-grade-3 { background: linear-gradient(145deg, #172040 0%, #0f172a 100%); }
+.img-grade-4 { background: linear-gradient(145deg, #1a1040 0%, #130b30 100%); }
+.img-grade-5 { background: linear-gradient(145deg, #2a200a 0%, #1c1505 60%, #241a08 100%); }
+.img-grade-5::after { background: radial-gradient(ellipse at center, rgba(234, 179, 8, 0.08) 0%, transparent 65%); }
+.img-grade-6 { background: linear-gradient(145deg, #2a1008 0%, #1c0a04 60%, #241208 100%); }
+.img-grade-6::after { background: radial-gradient(ellipse at center, rgba(249, 115, 22, 0.08) 0%, transparent 65%); }
+.img-grade-7 { background: linear-gradient(145deg, #2a0820 0%, #1c0415 60%, #240820 100%); }
+.img-grade-7::after { background: radial-gradient(ellipse at center, rgba(236, 72, 153, 0.1) 0%, transparent 65%); }
+.img-grade-8 { background: linear-gradient(145deg, #031a20 0%, #021218 60%, #031a20 100%); }
+.img-grade-8::after { background: radial-gradient(ellipse at center, rgba(6, 182, 212, 0.12) 0%, transparent 65%); }
 
 .item-icon {
   width: 100%;
   height: 100%;
   object-fit: scale-down;
-  background: rgba(255, 255, 255, 0.1);
-  padding: 1rem;
+  padding: 0.9rem;
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
   transform: translateZ(0);
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
+  transition: transform 0.2s ease;
+}
+
+.item-card:hover .item-icon {
+  transform: translateZ(0) scale(1.06);
 }
 
 .item-grade {
   position: absolute;
   top: 0.5rem;
   left: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  z-index: 2;
+  text-transform: uppercase;
 }
 
-.grade-5 { background: rgba(255, 215, 0, 0.9); color: #333; }
-.grade-6 { background: rgba(255, 165, 0, 0.9); color: #333; }
-.grade-7 { background: rgba(255, 20, 147, 0.9); color: white; }
+.grade-1, .grade-2, .grade-3 {
+  background: rgba(100, 116, 139, 0.85);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.grade-4 {
+  background: rgba(88, 28, 135, 0.85);
+  color: #e9d5ff;
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+.grade-5 {
+  background: linear-gradient(135deg, rgba(161, 98, 7, 0.9), rgba(202, 138, 4, 0.9));
+  color: #fef3c7;
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  box-shadow: 0 0 10px rgba(234, 179, 8, 0.2);
+}
+.grade-6 {
+  background: linear-gradient(135deg, rgba(154, 52, 18, 0.9), rgba(194, 65, 12, 0.9));
+  color: #ffedd5;
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.2);
+}
+.grade-7 {
+  background: linear-gradient(135deg, rgba(157, 23, 77, 0.9), rgba(190, 24, 93, 0.9));
+  color: #fce7f3;
+  border: 1px solid rgba(236, 72, 153, 0.4);
+  box-shadow: 0 0 10px rgba(236, 72, 153, 0.25);
+}
+.grade-8 {
+  background: linear-gradient(135deg, rgba(8, 145, 178, 0.9), rgba(6, 182, 212, 0.9));
+  color: #cffafe;
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
+}
 
 .item-level {
   position: absolute;
   top: 0.5rem;
   right: 0.5rem;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #94a3b8;
+  border: 1px solid rgba(255,255,255,0.06);
+  z-index: 2;
 }
 
+/* ── Item Body ── */
 .item-info {
-  padding: 0.75rem;
+  padding: 0.875rem;
   flex-grow: 1;
   display: flex;
   flex-direction: column;
@@ -2361,119 +2507,123 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .item-name {
   color: #e2e8f0;
-  margin: 0 0 0.75rem 0;
-  font-size: 1rem;
-  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
-    .product-id {
-      font-size: 0.75rem;
-      color: #94a3b8;
-      word-break: break-all;
-    }
+.product-id {
+  font-size: 0.7rem;
+  color: #374151;
+  word-break: break-all;
+  font-family: ui-monospace, monospace;
+}
 
 .seller-line {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.85rem;
-  color: #94a3b8;
+  font-size: 0.8rem;
 }
-.seller-label { color: #94a3b8; }
-.seller-name { font-weight: 600; color: #cbd5e0; }
+.seller-label { color: #4b5563; }
+.seller-name { font-weight: 600; color: #6b7280; }
 
 .item-header {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.35rem;
   margin-bottom: 0.75rem;
 }
 
 .item-rating {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.2rem;
+  margin-top: 0.1rem;
 }
 
 .star {
-  font-size: 1rem;
+  font-size: 0.95rem;
   line-height: 1;
 }
 
 .star-yellow {
-  color: #ffc107;
-  filter: drop-shadow(0 0 2px rgba(255, 193, 7, 0.3));
+  color: #fbbf24;
+  filter: drop-shadow(0 0 3px rgba(251, 191, 36, 0.5));
 }
 
 .star-purple {
-  color: #6f42c1;
-  filter: drop-shadow(0 0 2px rgba(111, 66, 193, 0.3));
+  color: #a855f7;
+  filter: drop-shadow(0 0 3px rgba(168, 85, 247, 0.5));
 }
 
-
+/* ── Stats ── */
 .item-stats {
-  margin-bottom: 1rem;
+  margin-bottom: 0.875rem;
 }
 
 .stat {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.35rem;
+  align-items: center;
 }
 
 .stat-label {
-  color: #94a3b8;
-  font-size: 0.9rem;
+  color: #64748b;
+  font-size: 0.8rem;
 }
 
 .stat-value {
-  color: #e2e8f0;
+  color: #cbd5e0;
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
 }
 
 .item-stat-models {
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid #2d3748;
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid rgba(30, 37, 69, 0.9);
 }
 
 .stat-model {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.4rem;
-  font-size: 0.85rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.8rem;
 }
 
 .stat-model-label {
-  color: #cbd5e0;
+  color: #94a3b8;
   font-weight: 500;
 }
 
 .additional-indicator {
-  color: #10b981;
-  font-weight: 700;
-  margin-left: 0.25rem;
+  color: #34d399;
+  font-weight: 800;
+  margin-left: 0.2rem;
 }
 
 .stat-model-value {
-  color: #e2e8f0;
+  color: #cbd5e0;
   font-weight: 600;
 }
 
-    .stat-quality {
-      margin-left: 0.35rem;
-      color: #8b5cf6;
-      font-weight: 600;
-      font-size: 0.85rem;
-    }
-    .stat-quality.unavailable {
-      color: #64748b;
-      font-weight: 500;
-    }
+.stat-quality {
+  margin-left: 0.3rem;
+  color: #8b5cf6;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+.stat-quality.unavailable {
+  color: #374151;
+  font-weight: 500;
+}
 
+/* ── Skills ── */
 .item-skills {
-  margin-bottom: 1rem;
+  margin-bottom: 0.875rem;
   flex-grow: 1;
 }
 
@@ -2481,159 +2631,184 @@ async function preloadSellerNames(list: ItemProduct[]) {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 2rem;
+  min-height: 1.75rem;
 }
 
 .no-skills-text {
-  color: #64748b;
+  color: #374151;
   font-style: italic;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 .skill {
   display: flex;
   justify-content: space-between;
-  padding: 0.25rem 0;
-  font-size: 0.8rem;
-  color: #cbd5e0;
+  align-items: center;
+  padding: 0.22rem 0.5rem;
+  margin-bottom: 0.2rem;
+  font-size: 0.78rem;
+  background: rgba(139, 92, 246, 0.05);
+  border-radius: 5px;
+  border: 1px solid rgba(139, 92, 246, 0.1);
 }
 
 .skill-name {
   font-weight: 500;
   cursor: help;
-  border-bottom: 1px dotted #64748b;
+  color: #a78bfa;
 }
 
 .skill-name:hover {
-  color: #8b5cf6;
+  color: #c4b5fd;
 }
 
 .skill-power {
   color: #8b5cf6;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 0.8rem;
 }
 
+/* ── Price ── */
 .item-price {
-  background: #252b42;
-  padding: 0.75rem;
-  border-top: 1px solid #2d3748;
+  background: rgba(10, 12, 28, 0.7);
+  padding: 0.875rem;
+  border-top: 1px solid rgba(20, 25, 50, 0.9);
 }
 
 .price-main {
   display: flex;
   align-items: baseline;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.35rem;
+  gap: 0.4rem;
 }
 
 .price-value {
-  font-size: 1.3rem;
-  font-weight: 700;
+  font-size: 1.35rem;
+  font-weight: 800;
   color: #10b981;
+  letter-spacing: -0.3px;
 }
 
 .price-currency {
-  margin-left: 0.5rem;
-  color: #94a3b8;
-  font-weight: 500;
+  color: #6b7280;
+  font-weight: 600;
+  font-size: 0.85rem;
 }
 
 .price-details {
-  margin-bottom: 1rem;
-  font-size: 0.8rem;
-  color: #94a3b8;
+  margin-bottom: 0.875rem;
+  font-size: 0.76rem;
+  color: #4b5563;
+  line-height: 1.5;
 }
 
-.crystal-price {
-  margin-bottom: 0.25rem;
-}
+.crystal-price { margin-bottom: 0.15rem; }
+.crystal-per-price { font-style: italic; }
 
-.crystal-per-price {
-  font-style: italic;
-}
-
+/* ── Buttons ── */
 .btn {
-  padding: 0.75rem 1.5rem;
-  border: none;
+  padding: 0.6rem 1.5rem;
+  border: 1px solid transparent;
   border-radius: 8px;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
   width: 100%;
+  letter-spacing: 0.2px;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, #5f63f0 0%, #8b5cf6 100%);
   color: white;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.25);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
 }
 
-.btn-outline {
-  background: #252b42;
-  border: 1px solid #3d4757;
-  color: #cbd5e0;
-}
-
-.btn-outline:hover:not(:disabled) {
-  background: #2d3748;
-  border-color: #6366f1;
-  color: #e2e8f0;
-}
-
-.btn-outline:disabled {
+.btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
+.btn-outline {
+  background: rgba(37, 43, 66, 0.6);
+  border: 1px solid rgba(61, 71, 87, 0.7);
+  color: #94a3b8;
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: rgba(45, 55, 72, 0.8);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #e2e8f0;
+}
+
+.btn-outline:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, rgba(71, 85, 105, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
+  color: #e2e8f0;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(71, 85, 105, 0.25);
+}
 
 .btn-buy {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
   color: white;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);
 }
 
 .btn-buy:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35);
 }
 
 .loading-name {
-  color: #64748b;
+  color: #374151;
   font-style: italic;
-  font-size: 0.9em;
+  font-size: 0.88em;
 }
 
+/* ── Pagination ── */
 .pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1.5rem 0;
-  border-top: 1px solid #2d3748;
+  padding: 1.25rem 0;
+  border-top: 1px solid rgba(30, 37, 69, 0.9);
   gap: 1rem;
 }
 
 .pagination.top {
-  padding: 1rem 0 0.5rem 0;
+  padding: 0.875rem 0 0.5rem 0;
   border-top: none;
-  border-bottom: 1px solid #2d3748;
+  border-bottom: 1px solid rgba(30, 37, 69, 0.9);
   margin-bottom: 1.5rem;
 }
 
 .pagination.bottom {
-  padding: 2rem 0 1rem 0;
-  border-top: 1px solid #2d3748;
+  padding: 1.5rem 0 0.75rem 0;
+  border-top: 1px solid rgba(30, 37, 69, 0.9);
   border-bottom: none;
   margin-top: 2rem;
 }
 
-/* Login Modal */
+/* ── Login Modal ── */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(4, 6, 20, 0.75);
+  backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2641,24 +2816,36 @@ async function preloadSellerNames(list: ItemProduct[]) {
 }
 
 .login-modal {
-  background: #1a1f3a;
-  border: 1px solid #2d3748;
-  border-radius: 12px;
-  width: min(500px, 90vw);
-  max-width: 500px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  background: linear-gradient(160deg, #141830 0%, #0f1225 100%);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 16px;
+  width: min(480px, 90vw);
+  max-width: 480px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.03);
 }
 
 .login-modal .modal-header {
-  padding: 1.5rem;
-  border-bottom: 1px solid #2d3748;
+  padding: 1.5rem 1.5rem 1.25rem;
+  border-bottom: 1px solid rgba(30, 37, 69, 0.9);
   text-align: center;
+  position: relative;
+}
+
+.login-modal .modal-header::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 20%;
+  right: 20%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.4), transparent);
 }
 
 .login-modal .modal-header h2 {
   margin: 0;
   color: #e2e8f0;
-  font-size: 1.5rem;
+  font-size: 1.4rem;
+  font-weight: 700;
 }
 
 .login-modal .modal-body {
@@ -2667,71 +2854,65 @@ async function preloadSellerNames(list: ItemProduct[]) {
 }
 
 .login-modal .modal-body p {
-  margin: 0 0 2rem 0;
-  color: #cbd5e0;
-  font-size: 1rem;
+  margin: 0 0 1.75rem 0;
+  color: #94a3b8;
+  font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .login-options {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.875rem;
 }
 
 .chain-selector h3 {
-  margin: 0 0 1rem 0;
+  margin: 0 0 0.875rem 0;
   color: #e2e8f0;
-  font-size: 1.25rem;
+  font-size: 1.15rem;
+  font-weight: 600;
 }
 
 .current-chain-hint {
-  margin: 0 0 1.5rem 0;
-  color: #94a3b8;
-  font-size: 0.9rem;
+  margin: 0 0 1.25rem 0;
+  color: #64748b;
+  font-size: 0.85rem;
   font-style: italic;
 }
 
 .chain-options {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   justify-content: center;
 }
 
 .chain-options .btn {
   flex: 1;
-  min-width: 120px;
+  min-width: 100px;
 }
 
 .login-modal .btn {
-  padding: 0.875rem 1.5rem;
-  font-size: 1rem;
-}
-
-.login-modal .btn-secondary {
-  background: linear-gradient(135deg, #475569 0%, #334155 100%);
-  color: white;
-}
-
-.login-modal .btn-secondary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(108, 117, 125, 0.3);
+  padding: 0.8rem 1.5rem;
+  font-size: 0.95rem;
 }
 
 .login-modal .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .chain-options .btn-active {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+  border-color: rgba(16, 185, 129, 0.4);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
 }
 
-/* Modal */
+/* ── History Modal ── */
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(4, 6, 20, 0.65);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2739,23 +2920,24 @@ async function preloadSellerNames(list: ItemProduct[]) {
 }
 
 .modal {
-  background: #1a1f3a;
-  border: 1px solid #2d3748;
-  border-radius: 10px;
-  width: min(900px, 92vw);
-  max-height: 80vh;
+  background: linear-gradient(160deg, #131830 0%, #0d1124 100%);
+  border: 1px solid rgba(30, 37, 69, 0.9);
+  border-radius: 14px;
+  width: min(920px, 94vw);
+  max-height: 82vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.02);
 }
 
 .modal-header {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #2d3748;
+  padding: 0.875rem 1.125rem;
+  border-bottom: 1px solid rgba(30, 37, 69, 0.9);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  background: rgba(10, 12, 28, 0.3);
 }
 
 .modal-title .title-top {
@@ -2767,50 +2949,64 @@ async function preloadSellerNames(list: ItemProduct[]) {
 .modal-title h3 {
   color: #e2e8f0;
   margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .modal-title .subtitle {
-  margin-top: 0.25rem;
-  color: #94a3b8;
+  margin-top: 0.2rem;
+  color: #4b5563;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  font-size: 0.82rem;
 }
 
 .modal-title .subtitle .name {
   font-weight: 600;
-  color: #e2e8f0;
+  color: #94a3b8;
 }
 
 .badge {
-  background: rgba(99, 102, 241, 0.2);
+  background: rgba(99, 102, 241, 0.15);
   color: #a5b4fc;
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  padding: 0.15rem 0.5rem;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  padding: 0.12rem 0.45rem;
   border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
 }
 
 .badge.grade {
-  background: rgba(251, 191, 36, 0.2);
+  background: rgba(251, 191, 36, 0.12);
   color: #fbbf24;
-  border-color: rgba(251, 191, 36, 0.3);
+  border-color: rgba(251, 191, 36, 0.25);
 }
 
-.divider { opacity: 0.5; color: #64748b; }
+.divider { opacity: 0.3; color: #4b5563; }
 
 .modal-close {
-  background: transparent;
-  border: none;
-  font-size: 1.5rem;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
   cursor: pointer;
-  color: #cbd5e0;
-  transition: color 0.2s ease;
+  color: #64748b;
+  transition: all 0.18s ease;
+  line-height: 1;
+  padding: 0;
 }
 
 .modal-close:hover {
-  color: #e2e8f0;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
 }
 
 .modal-body {
@@ -2820,11 +3016,15 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .modal-footer {
   padding: 0.75rem 1rem;
-  border-top: 1px solid #2d3748;
+  border-top: 1px solid rgba(30, 37, 69, 0.9);
+  background: rgba(10, 12, 28, 0.3);
 }
 
+/* ── History Table ── */
 .history-table-wrapper {
   overflow: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(30, 37, 69, 0.9);
 }
 
 .history-table {
@@ -2834,66 +3034,66 @@ async function preloadSellerNames(list: ItemProduct[]) {
 
 .history-table th,
 .history-table td {
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid #2d3748;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(20, 25, 50, 0.9);
   text-align: left;
-  font-size: 0.9rem;
-  color: #e2e8f0;
+  font-size: 0.85rem;
+  color: #cbd5e0;
 }
 
 .history-table tbody tr:nth-child(odd) {
-  background: #252b42;
+  background: rgba(10, 12, 28, 0.3);
 }
 
 .history-table tbody tr:hover {
-  background: #2d3748;
+  background: rgba(99, 102, 241, 0.05);
 }
 
 .history-table thead th {
-  background: #1a1f3a;
+  background: rgba(10, 12, 28, 0.6);
   position: sticky;
   top: 0;
   z-index: 1;
-  color: #cbd5e0;
+  color: #64748b;
   font-weight: 600;
-  border-bottom: 2px solid #3d4757;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(45, 55, 90, 0.9);
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
-.small { font-size: 0.75rem; color: #94a3b8; }
+.small { font-size: 0.72rem; color: #4b5563; }
 
 .avatar-cell { display: flex; flex-direction: column; gap: 0.1rem; }
-
-.avatar-name { font-weight: 600; color: #e2e8f0; }
-
-.avatar-addr { color: #94a3b8; }
+.avatar-name { font-weight: 600; color: #94a3b8; }
+.avatar-addr { color: #374151; }
 
 .avatar-option.selected {
-  border-color: #4a90e2 !important;
-  background: #1e3a5f !important;
+  border-color: #6366f1 !important;
+  background: rgba(99, 102, 241, 0.12) !important;
 }
 
 .avatar-option:hover {
-  border-color: #3d4757;
-  background: #252b42;
+  border-color: rgba(99, 102, 241, 0.3) !important;
+  background: rgba(37, 43, 66, 0.8) !important;
 }
 
 .page-info {
-  color: #94a3b8;
+  color: #64748b;
   font-weight: 500;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
-/* Smaller pagination buttons */
 .pagination .btn-outline {
-  padding: 0.5rem 1rem;
-  font-size: 0.85rem;
+  padding: 0.45rem 1rem;
+  font-size: 0.82rem;
   width: auto;
   min-width: 90px;
 }

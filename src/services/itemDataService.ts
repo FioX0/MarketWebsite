@@ -590,16 +590,36 @@ function initializeElementalTypes(): Map<number, ElementalType> {
   return elementalTypeCache
 }
 
-// No fallbacks: all names should come from CSV
-
-// No fallbacks: all skill names should come from CSV
+/**
+ * Decodes a Nine Chronicles 8-digit equipment item ID into a readable name
+ * when no CSV entry or localization key is available.
+ * Format: TTTGxxxx  (TTT = type prefix, G = grade digit, xxxx = variant)
+ */
+function fallbackEquipmentName(itemId: number): string {
+  const s = String(itemId)
+  if (s.length !== 8) return `Item ${itemId}`
+  const typeCode = s.slice(0, 3)
+  const typeMap: Record<string, string> = {
+    '101': 'Weapon',
+    '102': 'Armor',
+    '103': 'Belt',
+    '104': 'Necklace',
+    '105': 'Ring',
+  }
+  const typeName = typeMap[typeCode]
+  return typeName ? `Custom ${typeName}` : `Item ${itemId}`
+}
 
 // Public API functions
 export async function getItemName(itemId: number): Promise<string> {
   const items = await loadEquipmentItems()
   const item = items.get(itemId)
-  const name = item?.name || `Item ${itemId}`
-  return translateKoreanItemNameToEnglish(name)
+  const rawName = item?.name
+  // Empty or missing name — derive a readable fallback from the item ID structure
+  if (!rawName || rawName === `Item ${itemId}`) {
+    return fallbackEquipmentName(itemId)
+  }
+  return translateKoreanItemNameToEnglish(rawName)
 }
 
 export async function getItemData(itemId: number): Promise<ItemData | null> {

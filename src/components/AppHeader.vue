@@ -1,34 +1,41 @@
 <template>
   <header class="app-header">
+    <div class="header-glow"></div>
     <div class="header-content">
       <div class="logo">
-        <h2>Nine Chronicles Marketplace</h2>
+        <div class="logo-icon">◈</div>
+        <div class="logo-text">
+          <span class="logo-nine">9C</span>
+          <span class="logo-title">Marketplace</span>
+        </div>
       </div>
-      
+
       <div class="wallet-info">
-        <div class="info-item">
-          <span class="label">Network:</span>
-          <span class="value network">{{ networkName }}</span>
+        <div class="info-chip" v-if="networkName">
+          <span class="chip-dot network-dot"></span>
+          <span class="chip-label">{{ networkName }}</span>
         </div>
-        <div class="info-item">
-          <span class="label">Address:</span>
-          <span class="value address">{{ formatAddress(walletAddress) }}</span>
+        <div class="info-chip" v-if="walletAddress">
+          <span class="chip-icon">◉</span>
+          <span class="chip-label mono">{{ formatAddress(walletAddress) }}</span>
         </div>
-        <div class="info-item">
-          <span class="label">Balance:</span>
-          <span class="value balance">{{ walletBalance }}</span>
+        <div class="info-chip balance-chip" v-if="walletBalance">
+          <span class="chip-icon balance-icon">◆</span>
+          <span class="chip-label balance-value">{{ walletBalance }}</span>
         </div>
       </div>
-      
+
       <div class="header-actions">
-        <button v-if="isReadOnlyMode" @click="connect" class="btn btn-primary">
-          Connect
+        <button v-if="isReadOnlyMode" @click="connect" class="btn btn-connect">
+          <span class="btn-icon">⚡</span>
+          Connect Wallet
         </button>
         <template v-else>
           <button @click="transfer" class="btn btn-transfer">
-            NCG Transfer
+            <span class="btn-icon">⇄</span>
+            Transfer NCG
           </button>
-          <button @click="disconnect" class="btn btn-outline">
+          <button @click="disconnect" class="btn btn-disconnect">
             Disconnect
           </button>
         </template>
@@ -54,15 +61,12 @@ const emit = defineEmits<{
 
 function formatAddress(address: string): string {
   if (!address) return ''
-  return `${address.slice(0, 6)}...${address.slice(-4)}`
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
 function disconnect() {
-  // Clear session storage
   sessionStorage.removeItem('walletData')
   sessionStorage.removeItem('readOnlyChain')
-  
-  // Reload the page to reset state
   window.location.reload()
 }
 
@@ -77,205 +81,231 @@ function transfer() {
 
 <style scoped>
 .app-header {
-  background: #1a1f3a;
-  border-bottom: 1px solid #2d3748;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  background: rgba(14, 18, 42, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+  box-shadow: 0 1px 0 rgba(99, 102, 241, 0.1), 0 4px 24px rgba(0, 0, 0, 0.4);
   position: sticky;
   top: 0;
   z-index: 100;
+  overflow: hidden;
+}
+
+.header-glow {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 80px;
+  background: radial-gradient(ellipse at center, rgba(99, 102, 241, 0.15) 0%, transparent 70%);
+  pointer-events: none;
 }
 
 .header-content {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 1rem 2rem;
+  padding: 0.875rem 2rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 2rem;
+  gap: 1.5rem;
 }
 
-.logo h2 {
-  color: #e2e8f0;
-  margin: 0;
-  font-size: 1.5rem;
-  font-weight: 700;
+/* Logo */
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
 }
 
+.logo-icon {
+  font-size: 1.6rem;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.5));
+  line-height: 1;
+}
+
+.logo-text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.logo-nine {
+  font-size: 1.4rem;
+  font-weight: 900;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -0.5px;
+}
+
+.logo-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.3px;
+}
+
+/* Wallet Info */
 .wallet-info {
   display: flex;
-  gap: 2rem;
+  gap: 0.5rem;
   align-items: center;
+  flex-wrap: wrap;
 }
 
-.info-item {
+.info-chip {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.25rem;
-}
-
-.label {
-  font-size: 0.75rem;
-  color: #94a3b8;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  font-size: 0.8rem;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  color: #cbd5e0;
+  transition: border-color 0.2s;
 }
 
-.value {
-  font-size: 0.875rem;
+.info-chip:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.network-dot {
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  animation: pulse-dot 2.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
+  50% { opacity: 0.7; box-shadow: 0 0 10px rgba(16, 185, 129, 0.9); }
+}
+
+.chip-icon {
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+.balance-chip {
+  border-color: rgba(139, 92, 246, 0.25);
+  background: rgba(139, 92, 246, 0.06);
+}
+
+.balance-icon {
+  color: #8b5cf6 !important;
+}
+
+.balance-value {
+  color: #a78bfa;
   font-weight: 600;
 }
 
-.value.network {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.15);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
 }
 
-.value.address {
-  color: #cbd5e0;
-  font-family: monospace;
-}
-
-.value.balance {
-  color: #8b5cf6;
-}
-
+/* Actions */
 .header-actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.625rem;
+  flex-shrink: 0;
 }
 
 .btn {
-  padding: 0.5rem 1rem;
-  border: 1px solid #3d4757;
-  border-radius: 6px;
-  background: #252b42;
-  color: #cbd5e0;
-  font-size: 0.875rem;
-  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  border: 1px solid transparent;
+  white-space: nowrap;
 }
 
-.btn:hover {
-  background: #2d3748;
-  border-color: #6366f1;
-  color: #e2e8f0;
+.btn-icon {
+  font-size: 0.9rem;
 }
 
-.btn-outline {
-  border-color: #ef4444;
-  color: #ef4444;
-  background: transparent;
-}
-
-.btn-outline:hover {
-  background: #ef4444;
-  color: white;
-}
-
-.btn-primary {
+.btn-connect {
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
   color: white;
-  border: none;
+  border-color: rgba(139, 92, 246, 0.3);
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.3);
 }
 
-.btn-primary:hover {
+.btn-connect:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.5);
 }
 
 .btn-transfer {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: white;
-  border: none;
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
 }
 
 .btn-transfer:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.5);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.2);
 }
 
-@media (max-width: 768px) {
+.btn-disconnect {
+  background: transparent;
+  color: #94a3b8;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.btn-disconnect:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+@media (max-width: 900px) {
   .header-content {
-    flex-direction: column;
-    gap: 1rem;
-    padding: 1rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    gap: 0.75rem;
   }
-  
+
   .wallet-info {
-    flex-direction: column;
-    gap: 0.5rem;
+    order: 3;
     width: 100%;
-  }
-  
-  .info-item {
-    flex-direction: row;
-    justify-content: space-between;
-    width: 100%;
-    padding: 0.5rem;
-    background: #252b42;
-    border-radius: 6px;
-    border: 1px solid #2d3748;
-  }
-
-  .label {
-    font-size: 0.7rem;
-  }
-
-  .value {
-    font-size: 0.8rem;
-  }
-
-  .value.address {
-    word-break: break-all;
-    max-width: 60%;
-    text-align: right;
-  }
-  
-  .logo h2 {
-    font-size: 1.25rem;
+    justify-content: center;
   }
 
   .header-actions {
-    width: 100%;
-  }
-
-  .header-actions .btn {
-    flex: 1;
-    width: 100%;
+    order: 2;
   }
 }
 
 @media (max-width: 480px) {
-  .header-content {
-    padding: 0.75rem;
-    gap: 0.75rem;
-  }
-
-  .logo h2 {
-    font-size: 1.1rem;
-  }
-
-  .info-item {
-    padding: 0.4rem;
-  }
-
-  .label {
-    font-size: 0.65rem;
-  }
-
-  .value {
-    font-size: 0.75rem;
-  }
-
-  .value.address {
-    max-width: 55%;
-  }
+  .logo-title { display: none; }
+  .header-content { padding: 0.625rem 0.875rem; }
+  .info-chip { font-size: 0.75rem; padding: 0.3rem 0.6rem; }
+  .btn { padding: 0.4rem 0.75rem; font-size: 0.8rem; }
 }
 </style>
